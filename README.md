@@ -1,4 +1,4 @@
-# Flow MCP 🎨
+# Google Flow MCP 🎨
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 [![MCP](https://img.shields.io/badge/MCP-2024--11--05-purple)](https://modelcontextprotocol.io)
