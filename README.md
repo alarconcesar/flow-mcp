@@ -34,26 +34,17 @@ images/day).
 
 ### Prerequisites
 
-- **Python 3.11+** with [uv](https://docs.astral.sh/uv/) or pip
+- **Python 3.11+**
 - **Google Chrome** (for authentication)
 - **Playwright browsers** (for generation)
 
-### Install from GitHub
+### Install from PyPI (recommended)
 
 ```bash
-# Clone the repo
-git clone https://github.com/alarconcesar/flow-mcp.git
-cd flow-mcp
+pip install flow-mcp
 
-# Create venv and install
-uv venv
-uv pip install -e .
-
-# Or with pip:
-# python -m venv .venv
-# .venv\Scripts\activate   (Windows)
-# source .venv/bin/activate (Linux/macOS)
-# pip install -e .
+# Or with uv:
+# uv pip install flow-mcp
 
 # Install Playwright browsers
 playwright install chromium
@@ -62,10 +53,12 @@ playwright install chromium
 flow-mcp auth login
 ```
 
-### Or install directly from GitHub (no clone needed)
+### Or install from GitHub
 
 ```bash
-pip install git+https://github.com/alarconcesar/flow-mcp.git
+git clone https://github.com/alarconcesar/flow-mcp.git
+cd flow-mcp
+uv pip install -e .
 playwright install chromium
 flow-mcp auth login
 ```
