@@ -117,6 +117,7 @@ async def generate_images(
     *,
     _progress_cb: Callable[[int, int, str], None] | None = None,
     reference_image: str | None = None,
+    resolution: str = "1k",
 ) -> GenerationResult:
     """Generate images via Google Flow's ``batchGenerateImages`` API.
 
@@ -137,6 +138,9 @@ async def generate_images(
         Where to save generated images.
     reference_image:
         Optional path to a local image file to use as Image-to-Image reference.
+    resolution:
+        Output resolution: "1k" (default, original), "2k", "4k".
+        4K requires a Flow Ultra subscription.
     _progress_cb:
         Optional callback ``(current, total, message)`` for progress reporting.
 
@@ -146,6 +150,11 @@ async def generate_images(
     wire_model = MODELS.get(model.lower(), "NARWHAL")
     wire_aspect = ASPECT_RATIOS.get(aspect, "IMAGE_ASPECT_RATIO_PORTRAIT")
     timestamp = str(int(time.time() * 1000))
+    do_upscale = resolution.lower() in ("2k", "4k")
+    wire_resolution = {
+        "2k": "UPSAMPLE_IMAGE_RESOLUTION_2K",
+        "4k": "UPSAMPLE_IMAGE_RESOLUTION_4K",
+    }.get(resolution.lower())
 
     (page, ctx) = await acquire_page()
 
@@ -307,7 +316,7 @@ async def generate_images(
                 "content filter, or bearer token expired."
             )
 
-        # Parse fifeUrls and download
+        # Parse fifeUrls and media UUIDs
         _prog(6, 8, "Processing API response...")
         urls = re.findall(r'"fifeUrl"\s*:\s*"([^"]+)"', raw)
         if not urls:
@@ -315,9 +324,13 @@ async def generate_images(
                 f"No fifeUrl in API response. Raw: {raw[:500]}"
             )
 
-        log.info("images.found", count=len(urls))
+        # Extract media UUIDs for upscale
+        media_ids: list[str] = re.findall(
+            r'"mediaId"\s*:\s*"([0-9a-fA-F-]{36})"', raw
+        )
+        log.info("images.found", count=len(urls), media_ids=len(media_ids))
 
-        # Download each image
+        # Download (and optionally upscale) each image
         _prog(7, 8, f"Downloading {min(len(urls), count)} image(s)...")
         out = Path(output_dir) if output_dir else Path(tempfile_dir())
         out.mkdir(parents=True, exist_ok=True)
@@ -326,6 +339,30 @@ async def generate_images(
 
         for idx, url in enumerate(urls):
             url = url.replace("\\u0026", "&")
+
+            if do_upscale and idx < len(media_ids):
+                # Upscale via API
+                try:
+                    up_b64 = await _upscale_image(
+                        page, bearer, pid, media_ids[idx],
+                        wire_resolution, recaptcha_token,
+                    )
+                except Exception as exc:
+                    log.warning("upscale.failed", idx=idx, error=str(exc))
+                    # Fallback: download original
+                    up_b64 = None
+
+                if up_b64:
+                    filepath = out / f"flow-gen-{timestamp}-{idx}-{resolution}.{_guess_ext_from_mime(up_b64)}"
+                    filepath.write_bytes(base64.b64decode(up_b64))
+                    saved.append(filepath)
+                    log.info("image.upscaled", path=str(filepath), idx=idx, resolution=resolution)
+                    _prog(idx + 1, max_dl, f"Downloading upscaled image {idx + 1}...")
+                    if len(saved) >= count:
+                        break
+                    continue
+
+            # Download original
             try:
                 b64_data = await page.evaluate(
                     """async (u) => {
@@ -427,6 +464,86 @@ async def _call_api_with_retry(
         return raw
 
     return None
+
+
+async def _upscale_image(
+    page: Page,
+    bearer: str,
+    project_id: str,
+    media_id: str,
+    target_resolution: str,
+    recaptcha_token: str,
+) -> str | None:
+    """Upscale a generated image via ``POST /v1/flow/upsampleImage``.
+
+    Returns the base64-encoded image data, or ``None`` if the upscale failed
+    (e.g. 4K requires Ultra subscription).
+    """
+    import time as _time
+
+    sid = ";" + str(int(_time.time() * 1000))
+    body = json.dumps({
+        "mediaId": media_id,
+        "targetResolution": target_resolution,
+        "clientContext": {
+            "recaptchaContext": {
+                "token": recaptcha_token,
+                "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+            },
+            "projectId": project_id,
+            "sessionId": sid,
+            "tool": "PINHOLE",
+        },
+    })
+
+    js = f"""(async() => {{
+        try {{
+            const r = await fetch(
+                'https://aisandbox-pa.googleapis.com/v1/flow/upsampleImage',
+                {{
+                    method: 'POST',
+                    headers: {{
+                        'Authorization': 'Bearer {bearer}',
+                        'Content-Type': 'application/json;charset=UTF-8'
+                    }},
+                    body: {json.dumps(body)}
+                }}
+            );
+            if (r.ok) {{
+                const data = await r.json();
+                window.__up_img = data.encodedImage || null;
+            }} else {{
+                window.__up_img = 'HTTP_' + r.status;
+            }}
+        }} catch(e) {{
+            window.__up_img = 'ERR:' + e;
+        }}
+    }})();"""
+    await page.add_script_tag(content=js)
+    await page.wait_for_timeout(15_000)
+
+    result = await page.evaluate("window.__up_img")
+    if not result or isinstance(result, str) and (result.startswith("HTTP_") or result.startswith("ERR:")):
+        log.warning("upscale.api_failed", media_id=media_id, result=str(result)[:100])
+        return None
+
+    return result
+
+
+def _guess_ext_from_mime(b64_data: str) -> str:
+    """Guess file extension from base64 data URL or raw base64."""
+    # If it's a data URL
+    if b64_data.startswith("data:"):
+        mime = b64_data.split(";")[0].split(":")[1] if ":" in b64_data else ""
+        return _MIME_EXT.get(mime, "jpg")
+    return "jpg"
+
+
+_MIME_EXT: dict[str, str] = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
 
 
 def tempfile_dir() -> str:

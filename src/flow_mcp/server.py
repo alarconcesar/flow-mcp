@@ -72,9 +72,11 @@ server._mcp_server.version = __version__  # type: ignore[reportPrivateUsage]
         "Bypasses the Flow Agent chat quota (~10/day) by calling the "
         "API directly from a browser context with your saved authentication. "
         "Supports text-to-image and image-to-image (pass a reference_image path). "
+        "Supports upscale to 2K/4K (pass resolution parameter). "
         "Models: nano-pro (default), nano2 (fast), narwhal, gem_pix_2. "
         "Aspects: 9:16 (default portrait), 16:9 (landscape), 1:1 (square), "
-        "4:3, 3:4."
+        "4:3, 3:4. "
+        "Resolutions: 1k (default, original), 2k, 4k (requires Ultra)."
     ),
 )
 async def generate_image(
@@ -83,6 +85,7 @@ async def generate_image(
     count: int = 1,
     aspect: ALLOWED_ASPECTS = "9:16",  # type: ignore[assignment]
     reference_image: str | None = None,
+    resolution: str = "1k",
     ctx: Context | None = None,
 ) -> str:
     """Generate one or more images using Google Flow.
@@ -92,8 +95,9 @@ async def generate_image(
         model: Model to use.
         count: Number of images (1–4, default 1).
         aspect: Aspect ratio.
-        reference_image: Optional path to a local image file. If provided,
-            Flow will use it as a visual reference (Image-to-Image).
+        reference_image: Optional path to a local image file for I2I.
+        resolution: Output resolution. "1k" (default, original), "2k", or "4k".
+            4K requires a Flow Ultra subscription.
         ctx: FastMCP context (injected automatically) for progress reporting.
 
     Returns:
@@ -115,6 +119,12 @@ async def generate_image(
         })
 
     count = max(1, min(4, count))
+    resolution = resolution.lower()
+    if resolution not in ("1k", "2k", "4k"):
+        return json.dumps({
+            "success": False,
+            "error": f"Invalid resolution '{resolution}'. Valid: 1k, 2k, 4k",
+        })
     output_dir = os.environ.get("GFLOW_OUTPUT_DIR")
 
     log.info(
@@ -150,6 +160,7 @@ async def generate_image(
             aspect=aspect,
             output_dir=output_dir,
             reference_image=reference_image,
+            resolution=resolution,
             _progress_cb=_report,
         )
         log.info("generate_image.complete", count=len(result.files))
