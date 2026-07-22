@@ -15,6 +15,8 @@ images/day).
 
 - **Text-to-Image** — generate images from text prompts
 - **Image-to-Image** — use a reference image (pass `reference_image`)
+- **Text-to-Video** — generate videos from text prompts (pass `generate_video` tool)
+- **Image-to-Video** — animate a local image into a 4-8s video clip
 - **No quota limits** — calls the API directly, not through the chat
 - **Multi-account fallback** — rotates across Google accounts when one runs out of credits
 - **Persistent browser pool** — reuses Chrome across generations (faster)
@@ -79,9 +81,9 @@ Add to your `.claude/settings.json`:
 }
 ```
 
-Restart Claude Code. The `generate_image` tool will be available.
+Restart Claude Code. The `generate_image` and `generate_video` tools will be available.
 
-### Parameters
+### Image Parameters (`generate_image`)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -90,6 +92,20 @@ Restart Claude Code. The `generate_image` tool will be available.
 | `count` | integer | `1` | Number of images (1–4) |
 | `aspect` | enum | `9:16` | `9:16`, `16:9`, `1:1`, `4:3`, `3:4` |
 | `reference_image` | string | optional | Path to a local image for I2I |
+
+### Video Parameters (`generate_video`)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `prompt` | string | **required** | Text description of the video |
+| `model` | enum | `veo-fast` | `veo-fast` (cheapest), `veo-2-fast` (confirmed working), `veo` (standard), `veo-hq` |
+| `aspect` | enum | `9:16` | `9:16`, `16:9`, `1:1` |
+| `duration` | integer | `4` | Clip length in seconds: `4` (cheapest), `6`, `8` |
+| `reference_image` | string | optional | Path to a local image to animate (I2V) |
+
+**Cost warning**: Video is significantly more expensive than image generation. A single 4s clip can cost ~20-50 credits. Prefer `veo-fast` + 4s duration to minimize consumption.
+
+**Download Note**: As of Jul 2026, Flow's public tRPC API does not expose direct download URLs for video (only images work). The `generate_video` tool automatically returns the **project URL** where the video is rendered. Open this URL in your desktop browser to watch and click "Download" manually.
 
 ### Examples
 
