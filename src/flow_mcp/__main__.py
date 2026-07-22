@@ -15,24 +15,31 @@ import sys
 
 def main() -> None:
     """Entry point principal."""
+    # Parse --browser flag from raw argv before filtering
+    has_browser_flag = False
+    browser_type = "chrome"
+    if "--browser" in sys.argv:
+        idx = sys.argv.index("--browser")
+        if idx + 1 < len(sys.argv) and sys.argv[idx + 1] in ("chrome", "internal"):
+            has_browser_flag = True
+            browser_type = sys.argv[idx + 1]
+
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
 
-    if len(args) >= 2 and args[0] == "auth" and args[1] == "login":
-        _run_async(_auth_login())
+    # Auth login with --browser flag
+    if has_browser_flag and len(args) >= 2 and args[0] == "auth" and args[1] == "login":
+        if browser_type == "internal":
+            _run_async(_auth_login_internal())
+        else:
+            _run_async(_auth_login())
     elif len(args) >= 2 and args[0] == "auth" and args[1] == "login-internal":
         _run_async(_auth_login_internal())
+    elif len(args) >= 2 and args[0] == "auth" and args[1] == "login":
+        _run_async(_auth_login())
     elif len(args) >= 2 and args[0] == "auth" and args[1] == "list":
         _run_async(_auth_list())
     elif len(args) >= 1 and args[0] == "help":
         _print_help()
-    elif len(sys.argv) > 1 and sys.argv[1] != "auth":
-        # Check for --browser flag
-        if "--browser" in sys.argv and "internal" in sys.argv:
-            _run_async(_auth_login_internal())
-        elif "--browser" in sys.argv and "chrome" in sys.argv:
-            _run_async(_auth_login())
-        else:
-            _print_help()
     else:
         from flow_mcp.server import main as server_main
 
@@ -67,7 +74,7 @@ async def _auth_list() -> None:
 
 
 def _print_help() -> None:
-    print("Flow MCP v0.1.0 — Google Flow image generation for Claude Code\n")
+    print("Flow MCP v0.2.0 — Google Flow image generation for Claude Code\n")
     print("USO:")
     print("  flow-mcp                    Iniciar MCP server (modo stdio)")
     print("  flow-mcp auth login         Iniciar sesión en Google Flow")

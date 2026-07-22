@@ -46,4 +46,4 @@ PROJECT_CREATE_WAIT_MS: Final[int] = 5_000
 SERVER_NAME: Final[str] = "flow-image-server"
 
 # ── Browser pool ────────────────────────────────────────────────────────
-BROWSER_IDLE_TIMEOUT_S: Final[int] = 300   # 5 min idle before closing
+BROWSER_IDLE_TIMEOUT_S: Final[int] = 0   # 0 = never expire (keeps MCP alive)

@@ -15,6 +15,7 @@ from pathlib import Path
 import structlog
 from playwright.async_api import BrowserContext, Page, async_playwright
 
+from flow_mcp.browser import ensure_xvfb
 from flow_mcp.chrome_helpers import _is_playwright_chrome_channel_available
 from flow_mcp.constants import BROWSER_ARGS, VIEWPORT
 from flow_mcp.profile import (
@@ -154,6 +155,8 @@ async def cmd_login(profile_name: str | None = None) -> None:
     print(f"  📁 Perfil: {name}")
     print(f"  📁 Directorio: {profile_dir}")
 
+    ensure_xvfb()
+
     channel = "chrome" if _is_playwright_chrome_channel_available() else None
 
     async with async_playwright() as pw:
@@ -207,6 +210,8 @@ async def cmd_login_internal(profile_name: str | None = None) -> None:
     print(f"  📁 Perfil: {name}")
     print(f"  📁 Directorio: {profile_dir}")
     print("  🌐 Usando Chromium interno de Playwright\n")
+
+    ensure_xvfb()
 
     async with async_playwright() as pw:
         ctx = await pw.chromium.launch_persistent_context(

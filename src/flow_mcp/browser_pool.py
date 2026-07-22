@@ -13,7 +13,6 @@ from typing import AsyncIterator
 import structlog
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 
-from flow_mcp.browser import ensure_xvfb
 from flow_mcp.chrome_helpers import channel_for_profile
 from flow_mcp.constants import BROWSER_ARGS, BROWSER_IDLE_TIMEOUT_S, VIEWPORT
 from flow_mcp.profile import resolve_profile
@@ -48,7 +47,6 @@ class _BrowserPool:
         The caller MUST call :meth:`release` when done so the pool can reuse
         the browser.
         """
-        ensure_xvfb()
 
         async with self._lock:
             if self._in_use:
@@ -109,7 +107,7 @@ class _BrowserPool:
         self._pw = await async_playwright().start()
         self._ctx = await self._pw.chromium.launch_persistent_context(
             user_data_dir=str(self._profile_dir),
-            headless=False,
+            headless=True,
             channel=channel or None,
             args=BROWSER_ARGS,
             viewport=VIEWPORT,

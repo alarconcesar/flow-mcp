@@ -154,7 +154,7 @@ async def generate_images(
     wire_resolution = {
         "2k": "UPSAMPLE_IMAGE_RESOLUTION_2K",
         "4k": "UPSAMPLE_IMAGE_RESOLUTION_4K",
-    }.get(resolution.lower())
+    }[resolution.lower()]
 
     (page, ctx) = await acquire_page()
 
@@ -309,7 +309,7 @@ async def generate_images(
         body_json = json.dumps(json.dumps(request_body))
 
         # Attempt the API call, with retry if 401
-        raw = await _call_api_with_retry(page, api_url, bearer, body_json)
+        raw, bearer = await _call_api_with_retry(page, api_url, bearer, body_json)
         if raw is None:
             raise ContentFilteredError(
                 "API returned None — prompt may have been blocked by "
@@ -341,9 +341,9 @@ async def generate_images(
             url = url.replace("\\u0026", "&")
 
             if do_upscale and idx < len(media_ids):
-                # Upscale via API
+                # Upscale via API (with its own retry)
                 try:
-                    up_b64 = await _upscale_image(
+                    up_b64 = await _upscale_image_with_retry(
                         page, bearer, pid, media_ids[idx],
                         wire_resolution, recaptcha_token,
                     )
@@ -410,18 +410,19 @@ async def _call_api_with_retry(
     body_json: str,
     *,
     max_retries: int = 2,
-) -> str | None:
+) -> tuple[str | None, str]:
     """Call ``batchGenerateImages`` and retry on 401.
 
-    Returns the raw response text, or ``None``.
+    Returns ``(raw_response_text_or_None, updated_bearer)``.
     """
+    current_bearer = bearer
     for attempt in range(max_retries + 1):
         gen_js = f"""(async() => {{
             try {{
                 const r = await fetch({json.dumps(api_url)}, {{
                     method: 'POST',
                     headers: {{
-                        'Authorization': 'Bearer {bearer}',
+                        'Authorization': 'Bearer {current_bearer}',
                         'Content-Type': 'application/json;charset=UTF-8'
                     }},
                     body: {body_json}
@@ -446,12 +447,12 @@ async def _call_api_with_retry(
         )
 
         if raw is None:
-            return None
+            return None, current_bearer
 
         if isinstance(raw, str) and raw.startswith("HTTP_401:"):
             if attempt < max_retries:
                 log.info("auth.401_retry", attempt=attempt + 1)
-                bearer = await _refresh_token(page)
+                current_bearer = await _refresh_token(page)
                 continue
             raise AuthError(
                 f"HTTP 401 persisted after {max_retries} retries — session expired. "
@@ -461,9 +462,9 @@ async def _call_api_with_retry(
         if isinstance(raw, str) and raw.startswith("ERR:"):
             raise GenerationError(f"API fetch failed: {raw}")
 
-        return raw
+        return raw, current_bearer
 
-    return None
+    return None, current_bearer
 
 
 async def _upscale_image(
@@ -539,6 +540,37 @@ def _guess_ext_from_mime(b64_data: str) -> str:
     return "jpg"
 
 
+async def _upscale_image_with_retry(
+    page: Page,
+    bearer: str,
+    project_id: str,
+    media_id: str,
+    target_resolution: str,
+    recaptcha_token: str,
+    *,
+    max_retries: int = 2,
+) -> str | None:
+    """Wrap ``_upscale_image`` with bearer token refresh on 401."""
+    current_bearer = bearer
+    for attempt in range(max_retries + 1):
+        try:
+            result = await _upscale_image(
+                page, current_bearer, project_id, media_id,
+                target_resolution, recaptcha_token,
+            )
+            if result is not None:
+                return result
+            # None result — may be auth issue, try refreshing
+        except Exception:
+            pass
+        if attempt < max_retries:
+            log.info("upscale.401_retry", attempt=attempt + 1)
+            current_bearer = await _refresh_token(page)
+        else:
+            break
+    return None
+
+
 _MIME_EXT: dict[str, str] = {
     "image/jpeg": "jpg",
     "image/png": "png",
@@ -553,15 +585,4 @@ def tempfile_dir() -> str:
     return _tf.gettempdir()
 
 
-def _guess_mime(path: Path) -> str | None:
-    """Guess MIME type from file extension."""
-    ext = path.suffix.lower()
-    mime_map = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-        ".bmp": "image/bmp",
-    }
-    return mime_map.get(ext)
+
