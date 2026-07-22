@@ -26,7 +26,7 @@ from flow_mcp.profile import (
     _profile_name_from_dir,
     default_home,
 )
-from flow_mcp.account_manager import AccountManager
+from flow_mcp.account_manager import AccountCycleError, AccountManager
 
 log = structlog.get_logger("flow-mcp")
 
@@ -394,7 +394,56 @@ async def cmd_switch_account(name: str | None = None) -> None:
                 print(f"  ✅ Switched to next account: {next_name}\n")
             else:
                 print("  Already at the last account.\n")
-        except RuntimeError as exc:
-            # AccountCycleError (all exhausted) — wrap around to first
+        except AccountCycleError:
+            # All accounts exhausted in the cycle — wrap to first.
             mgr.reset()
             print(f"  🔄 Wrapped around to first account: {mgr.active_name}\n")
+
+
+async def cmd_remove_account(name: str) -> None:
+    """Remove a specific account (delete its profile directory).
+
+    Confirms with the user before deleting, since this wipes the
+    browser session. Refreshes the AccountManager singleton so the
+    removed account is not used in subsequent operations.
+    """
+    import sys
+
+    home = default_home()
+    profile_dir = home / f"profile_{name}"
+
+    if not profile_dir.exists():
+        print(f"  ❌ Account '{name}' not found at {profile_dir}\n")
+        return
+
+    # Confirm before destructive action
+    print(f"  ⚠️  About to remove account: {name}")
+    print(f"     Directory: {profile_dir}")
+    print(f"     This will delete the saved browser session.\n")
+    try:
+        answer = input("  Type the account name to confirm: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled.\n")
+        return
+
+    if answer != name:
+        print(f"  ❌ Confirmation did not match. Cancelled.\n")
+        return
+
+    try:
+        shutil.rmtree(profile_dir)
+    except OSError as exc:
+        print(f"  ❌ Failed to remove account: {exc}\n")
+        sys.exit(1)
+
+    print(f"  ✅ Removed account: {name}\n")
+
+    # Refresh the singleton so the removed account isn't used again.
+    # If the active account was the one we just removed, reset to
+    # the first remaining one (or empty list).
+    AccountManager.reset_instance()
+    mgr = AccountManager.get_instance()
+    if mgr.account_count > 0:
+        print(f"  Active account reset to: {mgr.active_name or '(none)'}\n")
+    else:
+        print("  No accounts remaining. Run `flow-mcp auth login` to add one.\n")

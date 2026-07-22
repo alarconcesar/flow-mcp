@@ -16,6 +16,7 @@ images/day).
 - **Text-to-Image** — generate images from text prompts
 - **Image-to-Image** — use a reference image (pass `reference_image`)
 - **No quota limits** — calls the API directly, not through the chat
+- **Multi-account fallback** — rotates across Google accounts when one runs out of credits
 - **Persistent browser pool** — reuses Chrome across generations (faster)
 - **Auto-retry** — refreshes auth token if it expires
 - **Progress reporting** — shows generation progress in Claude Code
@@ -106,17 +107,73 @@ reference_image: /Users/me/photo.jpg
 ## CLI commands
 
 ```bash
-flow-mcp                    # Start MCP server (stdio mode)
-flow-mcp auth login         # Authenticate with Google Flow
-flow-mcp auth list          # List saved profiles
-flow-mcp help               # Show help
+flow-mcp                           # Start MCP server (stdio mode)
+flow-mcp auth login [name]         # Authenticate (optionally as <name>)
+flow-mcp auth login --browser internal [name]   # Login via Playwright's Chromium
+flow-mcp auth list                 # List saved profiles
+flow-mcp auth accounts             # List accounts with priority order
+flow-mcp auth switch [name]        # Switch active account (next, or by name)
+flow-mcp auth remove <name>        # Remove a specific account (asks confirmation)
+flow-mcp auth logout [name]        # Remove active account (or <name>)
+flow-mcp credits                   # Check remaining credits
+flow-mcp help                      # Show help
 ```
+
+## Multi-account support
+
+flow-mcp can rotate across multiple Google Flow accounts automatically.
+When the active account runs out of credits (Google returns HTTP 403 with
+"credit"/"quota" in the body), the generator switches to the next
+configured account and retries the same request. If every account in the
+list is exhausted, generation fails with a clear message naming all the
+accounts that were tried.
+
+### Setup
+
+```bash
+# 1. Authenticate each account under a distinct profile name
+flow-mcp auth login personal
+flow-mcp auth login work
+flow-mcp auth login backup
+
+# 2. Define priority order via env var
+export GFLOW_ACCOUNTS=personal,work,backup
+```
+
+Without `GFLOW_ACCOUNTS`, flow-mcp auto-detects every authenticated
+profile and uses them in filesystem order. Profiles that don't exist on
+disk (e.g. typos in the env var) are filtered out and logged as
+warnings.
+
+### Manual control
+
+```bash
+flow-mcp auth accounts            # show all configured accounts and priority
+flow-mcp auth switch              # jump to the next account in the list
+flow-mcp auth switch work         # jump to a specific account by name
+flow-mcp auth remove backup       # delete an account (asks confirmation)
+```
+
+The active account name is persisted to `.gflow_active_account` inside
+`GFLOW_CLI_HOME` so the choice survives restarts.
+
+### Important
+
+- Each profile stores its own Chrome cookies under
+  `~/.local/share/gflow-cli/profile_<name>/`. Logging in to multiple
+  accounts on the same machine is fully supported — they never share
+  state.
+- The browser pool is closed and re-opened between accounts so each
+  account uses its own profile directory.
+- Multi-account is opt-in. If you only ever use one account, nothing
+  changes — just don't set `GFLOW_ACCOUNTS`.
 
 ## Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GFLOW_PROFILE` | auto-detected | Profile name |
+| `GFLOW_ACCOUNTS` | auto-detect | Comma-separated profile names in priority order (e.g. `personal,work,backup`). Missing names are filtered out with a warning. |
+| `GFLOW_PROFILE` | auto-detected | Profile name (single-account mode) |
 | `GFLOW_CLI_HOME` | *platform default* | gflow-cli data directory |
 | `GFLOW_OUTPUT_DIR` | temp directory | Where to save generated images |
 
@@ -152,17 +209,18 @@ flow-mcp auth login        # create a new profile
 flow-mcp/
 ├── src/
 │   └── flow_mcp/
-│       ├── __init__.py      # Package metadata & logging config
-│       ├── __main__.py      # CLI entry point (auth, server)
-│       ├── server.py        # FastMCP tool definition
-│       ├── generator.py     # Core generation logic
-│       ├── browser.py       # Playwright context & token capture
-│       ├── browser_pool.py  # Persistent browser context pool
-│       ├── auth.py          # Login, profile list commands
-│       ├── profile.py       # Profile resolution
-│       ├── recaptcha.py     # reCAPTCHA token minting
-│       ├── chrome_helpers.py # Chrome detection
-│       └── constants.py     # Shared constants
+│       ├── __init__.py        # Package metadata & logging config
+│       ├── __main__.py        # CLI entry point (auth, server)
+│       ├── server.py          # FastMCP tool definition
+│       ├── generator.py       # Core generation logic
+│       ├── browser.py         # Playwright context & token capture
+│       ├── browser_pool.py    # Persistent browser context pool
+│       ├── account_manager.py # Multi-account rotation + fallback
+│       ├── auth.py            # Login, profile list, remove, switch
+│       ├── profile.py         # Profile resolution
+│       ├── recaptcha.py       # reCAPTCHA token minting
+│       ├── chrome_helpers.py  # Chrome detection
+│       └── constants.py       # Shared constants
 ├── pyproject.toml
 ├── LICENSE (MIT)
 └── README.md

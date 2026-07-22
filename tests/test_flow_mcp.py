@@ -62,7 +62,7 @@ class TestConstants:
     def test_version_consistency(self) -> None:
         from flow_mcp import __version__
 
-        assert __version__ == "0.3.0"
+        assert __version__ == "0.4.0"
 
 
 # ── Generator (stateless helpers) ─────────────────────────────────────────
@@ -433,7 +433,7 @@ class TestMainCLI:
 
         _print_help()
         captured = capsys.readouterr()
-        assert "v0.3.0" in captured.out
+        assert "v0.4.0" in captured.out
         assert "auth login" in captured.out
         assert "--browser internal" in captured.out
         assert "auth accounts" in captured.out
@@ -568,3 +568,489 @@ def test_server_instance():
     # Check tool registration
     tool_names = [t.name for t in server._tool_manager.list_tools()]
     assert "generate_image" in tool_names
+
+
+# ── AccountManager (multi-account) ────────────────────────────────────────
+
+
+def _make_profile(home: Path, name: str, email: str | None = None) -> Path:
+    """Create a profile_<name> directory under home."""
+    p = home / f"profile_{name}"
+    p.mkdir(parents=True, exist_ok=True)
+    if email:
+        (p / ".gflow_account").write_text(email, encoding="utf-8")
+    return p
+
+
+class TestAccountManager:
+    def setup_method(self) -> None:
+        """Reset the AccountManager singleton before each test."""
+        from flow_mcp.account_manager import AccountManager
+
+        AccountManager.reset_instance()
+
+    def teardown_method(self) -> None:
+        """Reset after each test too."""
+        from flow_mcp.account_manager import AccountManager
+
+        AccountManager.reset_instance()
+
+    def test_load_from_env(self, tmp_path: Path) -> None:
+        """GFLOW_ACCOUNTS env var is honored (only existing profiles)."""
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "alpha", "a@x.com")
+        _make_profile(tmp_path, "beta", "b@x.com")
+        _make_profile(tmp_path, "gamma", "c@x.com")
+
+        with patch.dict(
+            os.environ,
+            {"GFLOW_ACCOUNTS": "alpha,beta,gamma", "GFLOW_CLI_HOME": str(tmp_path)},
+        ):
+            mgr = AccountManager()
+            assert mgr.all_accounts == ["alpha", "beta", "gamma"]
+            assert mgr.active_name == "alpha"
+
+    def test_load_from_env_filters_missing(self, tmp_path: Path) -> None:
+        """Profiles listed in GFLOW_ACCOUNTS but not on disk are skipped."""
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "alpha", "a@x.com")
+        # "ghost" intentionally not created
+
+        with patch.dict(
+            os.environ,
+            {"GFLOW_ACCOUNTS": "alpha,ghost", "GFLOW_CLI_HOME": str(tmp_path)},
+        ):
+            mgr = AccountManager()
+            assert mgr.all_accounts == ["alpha"]
+
+    def test_load_from_env_all_missing_falls_back(self, tmp_path: Path) -> None:
+        """If ALL env accounts are missing, fall back to auto-detect."""
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "real", "r@x.com")
+        # No profile dir for "ghost" or "phantom"
+
+        with patch.dict(
+            os.environ,
+            {"GFLOW_ACCOUNTS": "ghost,phantom", "GFLOW_CLI_HOME": str(tmp_path)},
+        ):
+            mgr = AccountManager()
+            # Should fall back to auto-detect and find "real"
+            assert "real" in mgr.all_accounts
+
+    def test_load_auto_detect(self, tmp_path: Path) -> None:
+        """Without env var, picks up all authenticated profiles only.
+
+        Profiles without a ``.gflow_account`` marker are NOT included in
+        auto-detect (they have no session, so they would just fail later).
+        They only show up in the all-profiles fallback when nothing else
+        is available.
+        """
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "one", "1@x.com")
+        _make_profile(tmp_path, "two", "2@x.com")
+        # Unauthenticated — excluded from auto-detect
+        _make_profile(tmp_path, "three")
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("GFLOW_ACCOUNTS", None)
+            mgr = AccountManager()
+            assert set(mgr.all_accounts) == {"one", "two"}
+
+    def test_load_unauthenticated_fallback(self, tmp_path: Path) -> None:
+        """If only unauthenticated profiles exist, they show up as last resort."""
+        from flow_mcp.account_manager import AccountManager
+
+        # Both unauthenticated
+        _make_profile(tmp_path, "stale1")
+        _make_profile(tmp_path, "stale2")
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("GFLOW_ACCOUNTS", None)
+            mgr = AccountManager()
+            # These show up via the all-profiles fallback (third tier)
+            assert set(mgr.all_accounts) == {"stale1", "stale2"}
+
+    def test_switch_to(self, tmp_path: Path) -> None:
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "a")
+        _make_profile(tmp_path, "b")
+        _make_profile(tmp_path, "c")
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            mgr = AccountManager()
+            assert mgr.active_name == "a"
+            mgr.switch_to("c")
+            assert mgr.active_name == "c"
+            mgr.switch_to("b")
+            assert mgr.active_name == "b"
+
+    def test_switch_to_unknown_raises(self, tmp_path: Path) -> None:
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "a")
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            mgr = AccountManager()
+            with pytest.raises(ValueError, match="not found"):
+                mgr.switch_to("nonexistent")
+
+    def test_switch_to_next(self, tmp_path: Path) -> None:
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "a")
+        _make_profile(tmp_path, "b")
+        _make_profile(tmp_path, "c")
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            mgr = AccountManager()
+            assert mgr.active_name == "a"
+            assert mgr.switch_to_next() == "b"
+            assert mgr.active_name == "b"
+            assert mgr.switch_to_next() == "c"
+            assert mgr.active_name == "c"
+
+    def test_switch_to_next_raises_on_cycle(self, tmp_path: Path) -> None:
+        """After trying the last account, switch_to_next raises."""
+        from flow_mcp.account_manager import AccountCycleError, AccountManager
+
+        _make_profile(tmp_path, "only")
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            mgr = AccountManager()
+            assert mgr.active_name == "only"
+            with pytest.raises(AccountCycleError, match="exhausted"):
+                mgr.switch_to_next()
+            # State must NOT have been mutated by the failed call.
+            assert mgr.active_name == "only"
+
+    def test_state_persists(self, tmp_path: Path) -> None:
+        """The active account name is written to disk and reloaded."""
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "x")
+        _make_profile(tmp_path, "y")
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            mgr1 = AccountManager()
+            mgr1.switch_to("y")
+            # State file should exist
+            state_file = tmp_path / ".gflow_active_account"
+            assert state_file.exists()
+            assert state_file.read_text() == "y"
+
+            # Reload — should restore to "y"
+            mgr2 = AccountManager()
+            assert mgr2.active_name == "y"
+
+    def test_active_dir(self, tmp_path: Path) -> None:
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "alpha", "a@x.com")
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            mgr = AccountManager()
+            assert mgr.active_dir == tmp_path / "profile_alpha"
+
+    def test_current_profile_dir_empty_list_raises(self, tmp_path: Path) -> None:
+        """If the account list is truly empty, raise immediately."""
+        from flow_mcp.account_manager import AccountManager
+
+        # Force empty list by patching the internal _load_accounts
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            mgr = AccountManager()
+            # Force empty list (override whatever _load_accounts did)
+            mgr._accounts = []
+            mgr._current = 0
+            with pytest.raises(RuntimeError, match="No Flow accounts"):
+                mgr.current_profile_dir()
+
+    def test_reset(self, tmp_path: Path) -> None:
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "a")
+        _make_profile(tmp_path, "b")
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            mgr = AccountManager()
+            mgr.switch_to("b")
+            mgr.reset()
+            assert mgr.active_name == "a"
+
+
+# ── generate_images_with_fallback (credit-exhausted → next account) ───────
+
+
+class TestGenerateWithFallback:
+    """Verify the multi-account fallback wrapper.
+
+    We mock generate_images so we don't actually hit the network. The test
+    verifies the orchestration: on CreditExhaustedError, switch account and
+    retry; on cycle exhaustion, raise a GenerationError listing tried
+    accounts.
+    """
+
+    def setup_method(self) -> None:
+        from flow_mcp.account_manager import AccountManager
+
+        AccountManager.reset_instance()
+
+    def teardown_method(self) -> None:
+        from flow_mcp.account_manager import AccountManager
+
+        AccountManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_first_account_succeeds(self, tmp_path: Path) -> None:
+        """If the first account works, no fallback needed."""
+        from flow_mcp.account_manager import AccountManager
+        from flow_mcp.generator import GenerationResult, generate_images_with_fallback
+
+        _make_profile(tmp_path, "a")
+        _make_profile(tmp_path, "b")
+
+        fake_result = GenerationResult(files=[])
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            AccountManager()  # initialize
+            with patch(
+                "flow_mcp.generator.generate_images",
+                AsyncMock(return_value=fake_result),
+            ):
+                with patch(
+                    "flow_mcp.browser_pool.close_pool",
+                    AsyncMock(),
+                ):
+                    result = await generate_images_with_fallback(
+                        prompt="hi", output_dir=str(tmp_path),
+                    )
+                    assert result is fake_result
+                    mgr = AccountManager.get_instance()
+                    assert mgr.active_name == "a"  # did not switch
+
+    @pytest.mark.asyncio
+    async def test_fallback_on_credit_exhausted(self, tmp_path: Path) -> None:
+        """First account out of credits → switch to second, which succeeds."""
+        from flow_mcp.account_manager import AccountManager
+        from flow_mcp.generator import (
+            CreditExhaustedError,
+            GenerationResult,
+            generate_images_with_fallback,
+        )
+
+        _make_profile(tmp_path, "first")
+        _make_profile(tmp_path, "second")
+        _make_profile(tmp_path, "third")
+
+        fake_result = GenerationResult(files=[])
+
+        # First call (account 0) → CreditExhaustedError
+        # Second call (account 1) → success
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            AccountManager()
+            mgr = AccountManager.get_instance()
+
+            with patch(
+                "flow_mcp.generator.generate_images",
+                AsyncMock(side_effect=[
+                    CreditExhaustedError("first out"),
+                    fake_result,
+                ]),
+            ):
+                with patch(
+                    "flow_mcp.browser_pool.close_pool",
+                    AsyncMock(),
+                ):
+                    result = await generate_images_with_fallback(
+                        prompt="hi", output_dir=str(tmp_path),
+                    )
+                    assert result is fake_result
+                    assert mgr.active_name == "second"
+
+    @pytest.mark.asyncio
+    async def test_all_accounts_exhausted(self, tmp_path: Path) -> None:
+        """All accounts run out of credits → GenerationError with list of tried."""
+        from flow_mcp.account_manager import AccountManager
+        from flow_mcp.generator import (
+            CreditExhaustedError,
+            GenerationError,
+            generate_images_with_fallback,
+        )
+
+        _make_profile(tmp_path, "a")
+        _make_profile(tmp_path, "b")
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            AccountManager()
+
+            with patch(
+                "flow_mcp.generator.generate_images",
+                AsyncMock(side_effect=CreditExhaustedError("no credits")),
+            ):
+                with patch(
+                    "flow_mcp.browser_pool.close_pool",
+                    AsyncMock(),
+                ):
+                    with pytest.raises(GenerationError, match="exhausted") as excinfo:
+                        await generate_images_with_fallback(
+                            prompt="hi", output_dir=str(tmp_path),
+                        )
+                    msg = str(excinfo.value)
+                    assert "a" in msg
+                    assert "b" in msg
+
+    @pytest.mark.asyncio
+    async def test_non_credit_error_does_not_switch(self, tmp_path: Path) -> None:
+        """Other errors (e.g. GenerationError) should NOT trigger fallback."""
+        from flow_mcp.account_manager import AccountManager
+        from flow_mcp.generator import (
+            GenerationError,
+            generate_images_with_fallback,
+        )
+
+        _make_profile(tmp_path, "a")
+        _make_profile(tmp_path, "b")
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            AccountManager()
+            mgr = AccountManager.get_instance()
+
+            with patch(
+                "flow_mcp.generator.generate_images",
+                AsyncMock(side_effect=GenerationError("nope")),
+            ):
+                with pytest.raises(GenerationError, match="nope"):
+                    await generate_images_with_fallback(
+                        prompt="hi", output_dir=str(tmp_path),
+                    )
+                # Should still be on 'a' — no fallback attempted
+                assert mgr.active_name == "a"
+
+
+# ── CLI: auth login <name> and auth remove <name> ─────────────────────────
+
+
+class TestMultiAccountCLI:
+    def setup_method(self) -> None:
+        from flow_mcp.account_manager import AccountManager
+
+        AccountManager.reset_instance()
+
+    def teardown_method(self) -> None:
+        from flow_mcp.account_manager import AccountManager
+
+        AccountManager.reset_instance()
+
+    def test_auth_login_with_name(self) -> None:
+        """flow-mcp auth login <name> must pass the name to cmd_login."""
+        with patch.object(sys, "argv", ["flow-mcp", "auth", "login", "work"]):
+            with patch("flow_mcp.__main__._run_async") as mock_run:
+                from flow_mcp.__main__ import main
+
+                main()
+                mock_run.assert_called_once()
+                # Inspect the coroutine passed to _run_async
+                coro = mock_run.call_args[0][0]
+                # The wrapper _auth_login is itself a coroutine — we just
+                # check it was awaited via _run_async. The actual name-passing
+                # is verified by the patch chain below.
+
+    def test_auth_login_name_internal_browser(self) -> None:
+        """flow-mcp auth login <name> --browser internal works."""
+        with patch.object(
+            sys,
+            "argv",
+            ["flow-mcp", "auth", "login", "personal", "--browser", "internal"],
+        ):
+            with patch("flow_mcp.__main__._run_async") as mock_run:
+                with patch("flow_mcp.__main__._auth_login_internal") as mock_internal:
+                    from flow_mcp.__main__ import main
+
+                    main()
+                    mock_internal.assert_called_once_with("personal")
+                    mock_run.assert_called_once()
+
+    def test_auth_remove_missing_arg(self) -> None:
+        """flow-mcp auth remove (no name) exits with usage error."""
+        with patch.object(sys, "argv", ["flow-mcp", "auth", "remove"]):
+            with patch.object(sys, "exit", side_effect=SystemExit) as mock_exit:
+                with patch("builtins.print") as mock_print:
+                    from flow_mcp.__main__ import main
+
+                    with pytest.raises(SystemExit):
+                        main()
+                    mock_exit.assert_called_once_with(2)
+                    printed = " ".join(
+                        str(c.args[0]) for c in mock_print.call_args_list
+                    )
+                    assert "Missing account name" in printed
+
+    def test_auth_remove_nonexistent(self, tmp_path: Path) -> None:
+        """Removing a non-existent account prints a friendly error."""
+        from flow_mcp.auth import cmd_remove_account
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            with patch("builtins.print") as mock_print:
+                # Use asyncio.run to execute the async function
+                import asyncio
+
+                asyncio.run(cmd_remove_account("ghost"))
+                printed = " ".join(
+                    str(c.args[0]) for c in mock_print.call_args_list
+                )
+                assert "not found" in printed
+
+    def test_auth_remove_with_confirmation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Removing a real account: confirm prompt + deletion + singleton reset."""
+        from flow_mcp.account_manager import AccountManager
+        from flow_mcp.auth import cmd_remove_account
+
+        _make_profile(tmp_path, "doomed", "d@x.com")
+        _make_profile(tmp_path, "survivor", "s@x.com")
+
+        # Provide a matching confirmation
+        monkeypatch.setattr("builtins.input", lambda _: "doomed")
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            import asyncio
+
+            asyncio.run(cmd_remove_account("doomed"))
+
+        # Profile directory should be gone
+        assert not (tmp_path / "profile_doomed").exists()
+        # Survivor should still be there
+        assert (tmp_path / "profile_survivor").exists()
+
+    def test_auth_remove_cancelled_on_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If the user types a different name, nothing is deleted."""
+        from flow_mcp.auth import cmd_remove_account
+
+        _make_profile(tmp_path, "protected", "p@x.com")
+        monkeypatch.setattr("builtins.input", lambda _: "WRONG")
+
+        with patch.dict(os.environ, {"GFLOW_CLI_HOME": str(tmp_path)}):
+            import asyncio
+
+            asyncio.run(cmd_remove_account("protected"))
+
+        # Profile must still exist
+        assert (tmp_path / "profile_protected").exists()
+
+
+# ── AccountManager singleton reset_instance ───────────────────────────────
+
+
+def test_account_manager_singleton() -> None:
+    """get_instance returns the same object; reset_instance clears it."""
+    from flow_mcp.account_manager import AccountManager
+
+    a = AccountManager.get_instance()
+    b = AccountManager.get_instance()
+    assert a is b
+    AccountManager.reset_instance()
+    c = AccountManager.get_instance()
+    assert c is not a

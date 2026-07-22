@@ -17,7 +17,6 @@ from playwright.async_api import BrowserContext, Page, Playwright, async_playwri
 from flow_mcp.account_manager import resolve_active_profile
 from flow_mcp.chrome_helpers import channel_for_profile
 from flow_mcp.constants import BROWSER_ARGS, BROWSER_IDLE_TIMEOUT_S, VIEWPORT
-from flow_mcp.profile import resolve_profile
 
 log = structlog.get_logger("flow-mcp")
 

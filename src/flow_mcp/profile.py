@@ -22,7 +22,15 @@ log = structlog.get_logger("flow-mcp")
 
 
 def default_home() -> Path:
-    """Retorna el directorio base de gflow-cli (misma lógica que gflow-cli)."""
+    """Retorna el directorio base de gflow-cli (misma lógica que gflow-cli).
+
+    Honors the ``GFLOW_CLI_HOME`` environment variable as an override —
+    useful for tests and for users who want to keep multiple isolated
+    profile sets (e.g. one per project).
+    """
+    override = os.environ.get("GFLOW_CLI_HOME")
+    if override:
+        return Path(override)
     return Path(user_data_dir("gflow-cli", "ffroliva", ensure_exists=False))
 
 

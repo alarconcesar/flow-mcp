@@ -124,21 +124,28 @@ class AccountManager:
     def switch_to_next(self) -> str | None:
         """Move to the next account in the list.
 
-        Returns the new account name, or ``None`` if we've exhausted all
-        accounts and wrapped around to the first.
+        Returns the new account name on success.
+
+        Raises ``AccountCycleError`` when all accounts have been tried and
+        the cycle is complete. State on disk is NOT mutated in the failing
+        case — the caller decides whether to wrap around via :meth:`reset`
+        or surface the error.
         """
         if not self._accounts:
             return None
 
-        self._current += 1
-        if self._current >= len(self._accounts):
-            self._current = 0
-            self._save_state()
+        next_index = self._current + 1
+        if next_index >= len(self._accounts):
+            log.info(
+                "account_manager.cycle_exhausted",
+                tried=self._accounts,
+            )
             raise AccountCycleError(
                 "All accounts have been exhausted. "
                 f"Tried: {', '.join(self._accounts)}"
             )
 
+        self._current = next_index
         name = self._accounts[self._current]
         self._save_state()
         log.info("account_manager.switched", new_account=name)
@@ -156,17 +163,42 @@ class AccountManager:
         """Load the ordered list of accounts.
 
         Priority:
-        1. ``GFLOW_ACCOUNTS`` env var (comma-separated profile names)
-        2. All authenticated profiles (any with ``.gflow_account``)
-        3. Fallback to ``default``
+        1. ``GFLOW_ACCOUNTS`` env var (comma-separated profile names).
+           Only names whose profile directory actually exists on disk are
+           kept; missing ones are logged as warnings so typos surface
+           instead of silently breaking generation later.
+        2. All authenticated profiles (any with ``.gflow_account``).
+        3. Fallback to ``["default"]`` (will error later if not found).
         """
         env = os.environ.get("GFLOW_ACCOUNTS", "").strip()
         if env:
-            names = [n.strip() for n in env.split(",") if n.strip()]
-            if names:
-                self._accounts = names
-                log.info("account_manager.from_env", accounts=names)
-                return
+            requested = [n.strip() for n in env.split(",") if n.strip()]
+            if requested:
+                resolved: list[str] = []
+                for name in requested:
+                    profile_dir = self._home / f"profile_{name}"
+                    if profile_dir.is_dir():
+                        resolved.append(name)
+                    else:
+                        log.warning(
+                            "account_manager.env_account_missing",
+                            name=name,
+                            path=str(profile_dir),
+                            hint=(
+                                "Profile not found. Run "
+                                "`flow-mcp auth login` to create it, or "
+                                "remove it from GFLOW_ACCOUNTS."
+                            ),
+                        )
+                if resolved:
+                    self._accounts = resolved
+                    log.info("account_manager.from_env", accounts=resolved)
+                    return
+                log.warning(
+                    "account_manager.env_all_missing",
+                    requested=requested,
+                    hint="Falling back to auto-detect.",
+                )
 
         # Auto-detect all authenticated profiles
         authed = _find_authenticated_profiles(self._home)

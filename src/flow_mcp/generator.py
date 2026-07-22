@@ -15,7 +15,7 @@ from typing import Any, Callable
 import structlog
 from playwright.async_api import Page
 
-from flow_mcp.account_manager import AccountManager
+from flow_mcp.account_manager import AccountCycleError, AccountManager
 from flow_mcp.browser import capture_bearer_token
 from flow_mcp.browser_pool import acquire_page, release_context
 from flow_mcp.constants import (
@@ -693,22 +693,31 @@ async def generate_images_with_fallback(
 
             try:
                 next_account = mgr.switch_to_next()
-                if next_account and attempt < max_attempts - 1:
-                    log.info(
-                        "account.switching",
-                        from_account=account,
-                        to_account=next_account,
-                    )
-                    continue
-            except RuntimeError:
-                pass
+            except AccountCycleError:
+                # No more accounts to try — fall through to the
+                # GenerationError below with the list of tried accounts.
+                raise GenerationError(
+                    f"All {len(attempted_accounts)} account(s) exhausted "
+                    f"({', '.join(attempted_accounts)}). "
+                    "Add more accounts via `flow-mcp auth login` or "
+                    "set GFLOW_ACCOUNTS=name1,name2,name3."
+                ) from exc
 
-            raise GenerationError(
-                f"All {len(attempted_accounts)} account(s) exhausted "
-                f"({', '.join(attempted_accounts)}). "
-                "Add more accounts via `flow-mcp auth login` or "
-                "set GFLOW_ACCOUNTS=name1,name2,name3."
-            ) from exc
+            if next_account is None:
+                # Empty account list — should be rare (env gave no accounts
+                # AND no authenticated profiles found).
+                raise GenerationError(
+                    f"No Flow accounts available. "
+                    "Run `flow-mcp auth login` to add one."
+                ) from exc
+
+            log.info(
+                "account.switching",
+                from_account=account,
+                to_account=next_account,
+            )
+            # Continue the for loop — try the next account.
+            continue
 
     raise GenerationError(
         f"Tried {len(attempted_accounts)} account(s) "
