@@ -51,3 +51,49 @@ UPLOAD_TIMEOUT_MS: Final[int] = 20_000         # max wait for upload
 
 # ── Browser pool ────────────────────────────────────────────────────────
 BROWSER_IDLE_TIMEOUT_S: Final[int] = 0   # 0 = never expire (keeps MCP alive)
+
+
+# ── Video constants ─────────────────────────────────────────────────────
+# Wire format from the API captured during a real Flow video generation
+# (Jul 2026, ceasr1 profile, model "abra_t2v_4s" = Veo 2 Fast, 4s, 720p).
+#
+# Models: each key is what the user passes to the MCP tool; the value is
+# the ``videoModelKey`` the API expects. "veo-fast" is the cheapest, "veo"
+# is the standard, "veo-hq" is the highest quality (and most expensive).
+#
+# We only know one model key for sure ("abra_t2v_4s") but the API also
+# accepts "veo-3.0-generate-preview" / "veo-3.0-fast-generate-preview" for
+# the public Veo 3 family. We expose them under friendly aliases.
+VIDEO_MODELS: Final[dict[str, str]] = {
+    "veo-fast":      "veo-3.0-fast-generate-preview",   # cheapest, fastest
+    "veo-2-fast":    "abra_t2v_4s",                     # confirmed working
+    "veo":           "veo-3.0-generate-preview",        # standard quality
+    "veo-hq":        "veo-3.0-generate-preview",        # alias; same as veo
+}
+ALLOWED_VIDEO_MODELS = Literal["veo-fast", "veo-2-fast", "veo", "veo-hq"]
+
+VIDEO_ASPECT_RATIOS: Final[dict[str, str]] = {
+    "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT",
+    "16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+    "1:1":  "VIDEO_ASPECT_RATIO_SQUARE",
+}
+ALLOWED_VIDEO_ASPECTS = Literal["9:16", "16:9", "1:1"]
+
+# 4s is the cheapest; 6s and 8s cost more credits. We default to 4s.
+VIDEO_DURATIONS: Final[tuple[int, ...]] = (4, 6, 8)
+
+# Status values returned by batchCheckAsyncVideoGenerationStatus
+VIDEO_STATUS_PENDING = "MEDIA_GENERATION_STATUS_SCHEDULED"
+VIDEO_STATUS_ACTIVE  = "MEDIA_GENERATION_STATUS_ACTIVE"
+VIDEO_STATUS_DONE    = "MEDIA_GENERATION_STATUS_SUCCESSFUL"
+VIDEO_STATUS_FAILED  = "MEDIA_GENERATION_STATUS_FAILED"
+
+# Timeouts — video is async and slow. 4s video typically takes 30-60s
+# to render; 8s can take 90s+ on busy servers. 4 minutes is a safe upper
+# bound.
+VIDEO_POLL_INTERVAL_MS: Final[int] = 3_000
+VIDEO_TIMEOUT_MS: Final[int] = 4 * 60 * 1000  # 4 minutes
+
+# Audio: Flow's default. "BLOCK_SILENCED_VIDEOS" means if audio gen fails
+# the whole clip is rejected (safer — never produces a silent video).
+VIDEO_AUDIO_FAILURE_PREFERENCE: Final[str] = "BLOCK_SILENCED_VIDEOS"

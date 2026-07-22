@@ -1054,3 +1054,294 @@ def test_account_manager_singleton() -> None:
     AccountManager.reset_instance()
     c = AccountManager.get_instance()
     assert c is not a
+
+
+# ── Video constants ──────────────────────────────────────────────────────
+
+
+class TestVideoConstants:
+    def test_video_models(self) -> None:
+        from flow_mcp.constants import VIDEO_MODELS, ALLOWED_VIDEO_MODELS
+
+        assert "veo-fast" in VIDEO_MODELS
+        assert "veo-2-fast" in VIDEO_MODELS
+        assert "veo" in VIDEO_MODELS
+        assert "veo-hq" in VIDEO_MODELS
+        # veo-2-fast is the captured-working key
+        assert VIDEO_MODELS["veo-2-fast"] == "abra_t2v_4s"
+
+    def test_video_aspects(self) -> None:
+        from flow_mcp.constants import VIDEO_ASPECT_RATIOS
+
+        assert "9:16" in VIDEO_ASPECT_RATIOS
+        assert "16:9" in VIDEO_ASPECT_RATIOS
+        assert "1:1" in VIDEO_ASPECT_RATIOS
+        assert VIDEO_ASPECT_RATIOS["9:16"] == "VIDEO_ASPECT_RATIO_PORTRAIT"
+        assert VIDEO_ASPECT_RATIOS["16:9"] == "VIDEO_ASPECT_RATIO_LANDSCAPE"
+
+    def test_video_durations(self) -> None:
+        from flow_mcp.constants import VIDEO_DURATIONS
+
+        assert 4 in VIDEO_DURATIONS
+        assert 6 in VIDEO_DURATIONS
+        assert 8 in VIDEO_DURATIONS
+
+    def test_video_status_constants(self) -> None:
+        from flow_mcp.constants import (
+            VIDEO_STATUS_ACTIVE,
+            VIDEO_STATUS_DONE,
+            VIDEO_STATUS_FAILED,
+            VIDEO_STATUS_PENDING,
+        )
+
+        assert VIDEO_STATUS_PENDING == "MEDIA_GENERATION_STATUS_SCHEDULED"
+        assert VIDEO_STATUS_ACTIVE == "MEDIA_GENERATION_STATUS_ACTIVE"
+        assert VIDEO_STATUS_DONE == "MEDIA_GENERATION_STATUS_SUCCESSFUL"
+        assert VIDEO_STATUS_FAILED == "MEDIA_GENERATION_STATUS_FAILED"
+
+    def test_video_audio_preference(self) -> None:
+        from flow_mcp.constants import VIDEO_AUDIO_FAILURE_PREFERENCE
+
+        assert VIDEO_AUDIO_FAILURE_PREFERENCE == "BLOCK_SILENCED_VIDEOS"
+
+
+# ── Video JS templates ──────────────────────────────────────────────────
+
+
+class TestVideoJSTemplates:
+    def test_generate_video_js(self) -> None:
+        from flow_mcp.js_templates import generate_video_js
+
+        js = generate_video_js("https://api/foo", "ya29.test", '{"a":1}')
+        assert "https://api/foo" in js
+        assert "ya29.test" in js
+        assert "Authorization" in js
+        assert "window.__vid" in js
+        assert "HTTP_401" in js
+
+    def test_check_video_status_js(self) -> None:
+        from flow_mcp.js_templates import check_video_status_js
+
+        js = check_video_status_js(
+            "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus",
+            "ya29.test",
+            '{"media":[]}',
+        )
+        assert "batchCheckAsyncVideoGenerationStatus" in js
+        assert "aisandbox-pa.googleapis.com" in js
+        assert "window.__vid_status" in js
+
+    def test_get_video_url_js(self) -> None:
+        from flow_mcp.js_templates import get_video_url_js
+
+        js = get_video_url_js("uuid-test")
+        assert "media.getMediaUrlRedirect" in js
+        assert "uuid-test" in js
+        assert "MEDIA_URL_TYPE_DOWNLOAD" in js
+        assert "window.__vid_url" in js
+
+
+# ── Video generator (with mocks) ─────────────────────────────────────────
+
+
+class TestGenerateVideo:
+    """Unit tests for the video generator. Real end-to-end is exercised
+    separately in the smoke test against cesar1/cesar2."""
+
+    def setup_method(self) -> None:
+        from flow_mcp.account_manager import AccountManager
+        AccountManager.reset_instance()
+
+    def teardown_method(self) -> None:
+        from flow_mcp.account_manager import AccountManager
+        AccountManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_video_result_describe(self, tmp_path: Path) -> None:
+        from flow_mcp.generator import VideoResult
+
+        result = VideoResult(
+            media_name="abc-123-def",
+            project_id="proj-456",
+            model="veo-fast",
+            duration_s=4,
+            media_blob_size=1_234_567,
+        )
+        desc = result.describe()
+        assert "veo-fast" in desc
+        assert "4s" in desc
+        assert "abc-123-def" in desc
+        assert "proj-456" in desc
+        assert "labs.google/fx/tools/flow" in desc
+
+    @pytest.mark.asyncio
+    async def test_generate_video_validates_args(self, tmp_path: Path) -> None:
+        from flow_mcp.generator import GenerationError, generate_video
+
+        # Bad model
+        with pytest.raises(GenerationError, match="Unknown video model"):
+            await generate_video("test", model="not-a-model", output_dir=str(tmp_path))
+
+        # Bad aspect
+        with pytest.raises(GenerationError, match="Unknown video aspect"):
+            await generate_video("test", aspect="99:99", output_dir=str(tmp_path))
+
+        # Bad duration
+        with pytest.raises(GenerationError, match="Invalid duration"):
+            await generate_video("test", duration=10, output_dir=str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_generate_video_first_account_succeeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If the first account works, no fallback needed."""
+        from flow_mcp.account_manager import AccountManager
+        from flow_mcp.generator import VideoResult, generate_video_with_fallback
+
+        # Build a fake profile dir
+        (tmp_path / "profile_v1").mkdir()
+        (tmp_path / "profile_v2").mkdir()
+        monkeypatch.setenv("GFLOW_CLI_HOME", str(tmp_path))
+        monkeypatch.setenv("GFLOW_ACCOUNTS", "v1,v2")
+
+        fake_result = VideoResult(
+            media_name="m1", project_id="p1",
+            model="veo-fast", duration_s=4,
+        )
+
+        with patch(
+            "flow_mcp.generator.generate_video",
+            AsyncMock(return_value=fake_result),
+        ):
+            with patch("flow_mcp.browser_pool.close_pool", AsyncMock()):
+                result = await generate_video_with_fallback(
+                    prompt="hi",
+                    model="veo-fast",
+                    aspect="9:16",
+                    duration=4,
+                )
+                assert result is fake_result
+                assert AccountManager.get_instance().active_name == "v1"
+
+    @pytest.mark.asyncio
+    async def test_generate_video_fallback_on_credits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """First account out of credits → switch to second, which succeeds."""
+        from flow_mcp.account_manager import AccountManager
+        from flow_mcp.generator import (
+            CreditExhaustedError,
+            VideoResult,
+            generate_video_with_fallback,
+        )
+
+        (tmp_path / "profile_v1").mkdir()
+        (tmp_path / "profile_v2").mkdir()
+        monkeypatch.setenv("GFLOW_CLI_HOME", str(tmp_path))
+        monkeypatch.setenv("GFLOW_ACCOUNTS", "v1,v2")
+
+        fake_result = VideoResult(
+            media_name="m2", project_id="p2",
+            model="veo-fast", duration_s=4,
+        )
+
+        with patch(
+            "flow_mcp.generator.generate_video",
+            AsyncMock(side_effect=[
+                CreditExhaustedError("v1 out"),
+                fake_result,
+            ]),
+        ):
+            with patch("flow_mcp.browser_pool.close_pool", AsyncMock()):
+                result = await generate_video_with_fallback(
+                    prompt="hi",
+                    model="veo-fast",
+                )
+                assert result is fake_result
+                assert AccountManager.get_instance().active_name == "v2"
+
+    @pytest.mark.asyncio
+    async def test_generate_video_all_exhausted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """All accounts out of credits → GenerationError."""
+        from flow_mcp.account_manager import AccountManager
+        from flow_mcp.generator import (
+            CreditExhaustedError,
+            GenerationError,
+            generate_video_with_fallback,
+        )
+
+        (tmp_path / "profile_v1").mkdir()
+        (tmp_path / "profile_v2").mkdir()
+        monkeypatch.setenv("GFLOW_CLI_HOME", str(tmp_path))
+        monkeypatch.setenv("GFLOW_ACCOUNTS", "v1,v2")
+
+        with patch(
+            "flow_mcp.generator.generate_video",
+            AsyncMock(side_effect=CreditExhaustedError("no credits")),
+        ):
+            with patch("flow_mcp.browser_pool.close_pool", AsyncMock()):
+                with pytest.raises(GenerationError, match="exhausted") as excinfo:
+                    await generate_video_with_fallback(prompt="hi")
+                msg = str(excinfo.value)
+                assert "v1" in msg
+                assert "v2" in msg
+
+    @pytest.mark.asyncio
+    async def test_generate_video_non_credit_error_doesnt_switch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Other errors should NOT trigger account fallback."""
+        from flow_mcp.account_manager import AccountManager
+        from flow_mcp.generator import GenerationError, generate_video_with_fallback
+
+        (tmp_path / "profile_v1").mkdir()
+        (tmp_path / "profile_v2").mkdir()
+        monkeypatch.setenv("GFLOW_CLI_HOME", str(tmp_path))
+        monkeypatch.setenv("GFLOW_ACCOUNTS", "v1,v2")
+
+        with patch(
+            "flow_mcp.generator.generate_video",
+            AsyncMock(side_effect=GenerationError("nope")),
+        ):
+            with pytest.raises(GenerationError, match="nope"):
+                await generate_video_with_fallback(prompt="hi")
+            # Still on v1 — no fallback
+            assert AccountManager.get_instance().active_name == "v1"
+
+
+# ── Video tool validation (CLI entry point) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_generate_video_tool_validation():
+    """Test the MCP tool entry point validates inputs correctly."""
+    from flow_mcp.server import generate_video_tool
+
+    # Invalid model
+    result = await generate_video_tool(prompt="test", model="bogus")
+    data = json.loads(result)
+    assert data.get("success") is False
+    assert "Invalid video model" in data.get("error", "")
+
+    # Invalid aspect
+    result = await generate_video_tool(prompt="test", aspect="99:99")
+    data = json.loads(result)
+    assert data.get("success") is False
+    assert "Invalid video aspect" in data.get("error", "")
+
+    # Invalid duration
+    result = await generate_video_tool(prompt="test", duration=10)
+    data = json.loads(result)
+    assert data.get("success") is False
+    assert "Invalid duration" in data.get("error", "")
+
+
+def test_generate_video_tool_registered():
+    """The generate_video tool should be in the server's tool list."""
+    from flow_mcp.server import server
+
+    tool_names = [t.name for t in server._tool_manager.list_tools()]
+    assert "generate_video" in tool_names
+    assert "generate_image" in tool_names

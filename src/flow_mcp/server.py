@@ -21,11 +21,20 @@ from flow_mcp import __version__
 from flow_mcp.constants import (
     ALLOWED_ASPECTS,
     ALLOWED_MODELS,
+    ALLOWED_VIDEO_ASPECTS,
+    ALLOWED_VIDEO_MODELS,
     ASPECT_RATIOS,
     MODELS,
     SERVER_NAME,
+    VIDEO_ASPECT_RATIOS,
+    VIDEO_DURATIONS,
+    VIDEO_MODELS,
 )
-from flow_mcp.generator import GenerationError, generate_images_with_fallback as generate_images
+from flow_mcp.generator import (
+    GenerationError,
+    generate_images_with_fallback as generate_images,
+    generate_video_with_fallback as generate_video,
+)
 
 log = structlog.get_logger("flow-mcp")
 
@@ -191,6 +200,123 @@ def main() -> None:
                 stream.reconfigure(encoding="utf-8", errors="replace")
 
     server.run(transport="stdio")
+
+
+# ── Video tool ──────────────────────────────────────────────────────────
+
+
+@server.tool(
+    name="generate_video",
+    description=(
+        "Generate videos via Google Flow's async batchGenerateVideoText API. "
+        "Bypasses the Flow Agent chat quota by calling the API directly "
+        "from a browser context with your saved authentication. "
+        "Supports text-to-video and image-to-video (pass reference_image path). "
+        "Models: veo-fast (cheapest, ~4s, 720p), veo (standard quality), "
+        "veo-hq (highest quality, most expensive). "
+        "Aspects: 9:16 (default portrait), 16:9 (landscape), 1:1 (square). "
+        "Durations: 4 (default, cheapest), 6, 8 seconds. "
+        "Multi-account fallback: rotates across GFLOW_ACCOUNTS when one "
+        "runs out of credits."
+    ),
+)
+async def generate_video_tool(
+    prompt: str,
+    model: ALLOWED_VIDEO_MODELS = "veo-fast",  # type: ignore[assignment]
+    aspect: ALLOWED_VIDEO_ASPECTS = "9:16",  # type: ignore[assignment]
+    duration: int = 4,
+    reference_image: str | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Generate a video using Google Flow.
+
+    Args:
+        prompt: Text description of the video to generate.
+        model: Model alias (default: "veo-fast" — cheapest).
+            Use "veo" for standard quality, "veo-2-fast" for the
+            confirmed-working Veo 2 Fast.
+        aspect: Aspect ratio (9:16 default, 16:9, 1:1).
+        duration: Length in seconds — 4, 6, or 8. Default 4 (cheapest).
+        reference_image: Optional path to a local image for I2V.
+        ctx: FastMCP context (injected automatically) for progress reporting.
+
+    Returns:
+        Human-readable result with path to the generated MP4 file.
+
+    Cost warning:
+        Video is significantly more expensive than image generation. A
+        single 4s veo-fast clip costs ~20-50 credits. Plan accordingly
+        and prefer the "veo-fast" + 4s combo unless quality is critical.
+    """
+    # ── Validate ──────────────────────────────────────────────────────
+    model = model.lower()
+    if model not in VIDEO_MODELS:
+        return json.dumps({
+            "success": False,
+            "error": f"Invalid video model '{model}'. Valid: {', '.join(VIDEO_MODELS)}",
+        })
+
+    aspect = aspect.lower()
+    if aspect not in VIDEO_ASPECT_RATIOS:
+        return json.dumps({
+            "success": False,
+            "error": f"Invalid video aspect '{aspect}'. Valid: {', '.join(VIDEO_ASPECT_RATIOS)}",
+        })
+
+    if duration not in VIDEO_DURATIONS:
+        return json.dumps({
+            "success": False,
+            "error": f"Invalid duration {duration}s. Valid: {', '.join(str(d) for d in VIDEO_DURATIONS)}",
+        })
+
+    output_dir = os.environ.get("GFLOW_OUTPUT_DIR")
+
+    log.info(
+        "generate_video.called",
+        prompt=prompt[:80],
+        model=model,
+        aspect=aspect,
+        duration=duration,
+    )
+
+    # ── Progress callback ─────────────────────────────────────────────
+    def _report(current: int, total: int, msg: str) -> None:
+        if ctx is not None:
+            try:
+                import asyncio
+
+                asyncio.ensure_future(
+                    ctx.report_progress(
+                        progress=float(current),
+                        total=float(total),
+                        message=msg,
+                    )
+                )
+            except Exception:
+                pass
+
+    # ── Generate ──────────────────────────────────────────────────────
+    try:
+        result = await generate_video(
+            prompt=prompt,
+            model=model,
+            aspect=aspect,
+            duration=duration,
+            output_dir=output_dir,
+            reference_image=reference_image,
+            _progress_cb=_report,
+        )
+        log.info("generate_video.complete", count=len(result.files))
+        return result.describe()
+    except GenerationError as exc:
+        log.warning("generate_video.failed", error=str(exc))
+        return f"❌ Video generation failed: {exc}"
+    except RuntimeError as exc:
+        log.warning("generate_video.error", error=str(exc))
+        return f"❌ Error: {exc}"
+    except Exception as exc:
+        log.error("generate_video.unexpected", error=str(exc))
+        return f"❌ Unexpected error: {exc}"
 
 
 if __name__ == "__main__":

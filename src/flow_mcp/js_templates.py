@@ -213,3 +213,127 @@ LIST_PROJECTS_JS: str = """async () => {
         return [];
     }
 }"""
+
+
+# ─── Video generation ─────────────────────────────────────────────────────
+
+
+def generate_video_js(api_url: str, bearer: str, body_json: str) -> str:
+    """Inject ``fetch()`` to kick off async video generation.
+
+    Flow uses an **async** API for video: the response immediately returns
+    a media name + status ``MEDIA_GENERATION_STATUS_SCHEDULED``, and the
+    caller polls ``batchCheckAsyncVideoGenerationStatus`` until the status
+    becomes ``MEDIA_GENERATION_STATUS_SUCCESSFUL`` (or FAILED).
+
+    Stores the raw response in ``window.__vid`` (success) or
+    ``HTTP_<status>:...`` / ``ERR:...`` on failure.
+    """
+    return f"""(async() => {{
+    try {{
+        const r = await fetch({json.dumps(api_url)}, {{
+            method: 'POST',
+            headers: {{
+                'Authorization': 'Bearer {bearer}',
+                'Content-Type': 'application/json;charset=UTF-8'
+            }},
+            body: {body_json}
+        }});
+        if (r.status === 401) {{
+            window.__vid = 'HTTP_401:' + (await r.text());
+        }} else if (r.status === 429) {{
+            window.__vid = 'HTTP_429:' + (await r.text());
+        }} else if (r.status === 403) {{
+            window.__vid = 'HTTP_403:' + (await r.text());
+        }} else if (r.status >= 500) {{
+            window.__vid = 'HTTP_5XX:' + r.status + ':' + (await r.text());
+        }} else {{
+            window.__vid = await r.text();
+        }}
+    }} catch(e) {{
+        window.__vid = 'ERR:' + e;
+    }}
+}})();"""
+
+
+def check_video_status_js(api_url: str, bearer: str, body_json: str) -> str:
+    """Inject ``fetch()`` to poll async video generation status.
+
+    Body is ``{"media": [{"name": "...", "projectId": "..."}]}`` (the
+    ``name`` is the UUID returned by ``batchAsyncGenerateVideoText``).
+
+    Response is JSON; ``window.__vid_status`` receives the raw body.
+    """
+    return f"""(async() => {{
+    try {{
+        const r = await fetch({json.dumps(api_url)}, {{
+            method: 'POST',
+            headers: {{
+                'Authorization': 'Bearer {bearer}',
+                'Content-Type': 'application/json;charset=UTF-8'
+            }},
+            body: {body_json}
+        }});
+        if (r.status === 401) {{
+            window.__vid_status = 'HTTP_401:' + (await r.text());
+        }} else if (r.status === 429) {{
+            window.__vid_status = 'HTTP_429:' + (await r.text());
+        }} else if (r.status === 403) {{
+            window.__vid_status = 'HTTP_403:' + (await r.text());
+        }} else if (r.status >= 500) {{
+            window.__vid_status = 'HTTP_5XX:' + r.status + ':' + (await r.text());
+        }} else {{
+            window.__vid_status = await r.text();
+        }}
+    }} catch(e) {{
+        window.__vid_status = 'ERR:' + e;
+    }}
+}})();"""
+
+
+def get_video_url_js(name: str) -> str:
+    """Inject ``fetch()`` to get a redirect URL for the generated video.
+
+    Flow stores the actual MP4 in its media service. This calls the
+    ``media.getMediaUrlRedirect`` tRPC endpoint with
+    ``MEDIA_URL_TYPE_DOWNLOAD`` to obtain a redirect to the video file.
+
+    Stored as ``window.__vid_url`` (a string) on success, or
+    ``HTTP_<status>`` / ``ERR:...`` on failure.
+    """
+    return f"""(async() => {{
+    try {{
+        // tRPC v11 expects a GET with the input in the `input` query
+        // param as a JSON-stringified object. mediaUrlType must be the
+        // DOWNLOAD type (not THUMBNAIL) to get the full video file URL.
+        const input = JSON.stringify({{
+            json: {{
+                name: {json.dumps(name)},
+                mediaUrlType: 'MEDIA_URL_TYPE_DOWNLOAD'
+            }}
+        }});
+        const url = 'https://labs.google/fx/api/trpc/media.getMediaUrlRedirect'
+            + '?input=' + encodeURIComponent(input);
+        const r = await fetch(url, {{ credentials: 'include' }});
+        if (!r.ok) {{
+            window.__vid_url = 'HTTP_' + r.status;
+            return;
+        }}
+        const data = await r.json();
+        // tRPC v11 wraps the result as {{ result: {{ data: <json> }} }}.
+        // Older responses may return the inner object directly.
+        const inner = data?.result?.data?.json
+                   ?? data?.result?.data
+                   ?? data?.json
+                   ?? data;
+        // The redirect URL lives in `mediaUrlRedirect` (string), or in
+        // `url` / `redirectUrl` as a fallback for older shapes.
+        window.__vid_url = inner?.mediaUrlRedirect
+                        || inner?.url
+                        || inner?.redirectUrl
+                        || (typeof inner === 'string' ? inner : null)
+                        || JSON.stringify(inner);
+    }} catch(e) {{
+        window.__vid_url = 'ERR:' + e;
+    }}
+}})();"""
