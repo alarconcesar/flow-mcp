@@ -5,6 +5,10 @@ Uso:
     flow-mcp auth login        → Autenticar con Google Flow via Chrome
     flow-mcp auth login --browser internal → Autenticar via Chromium interno
     flow-mcp auth list         → Listar perfiles
+    flow-mcp auth logout       → Eliminar perfil y credenciales
+    flow-mcp credits           → Consultar créditos restantes
+    flow-mcp --version         → Mostrar versión
+    flow-mcp help              → Mostrar ayuda
 """
 
 from __future__ import annotations
@@ -15,6 +19,13 @@ import sys
 
 def main() -> None:
     """Entry point principal."""
+    # --version flag
+    if "--version" in sys.argv:
+        from flow_mcp import __version__
+
+        print(f"flow-mcp v{__version__}")
+        sys.exit(0)
+
     # Parse --browser flag from raw argv before filtering
     has_browser_flag = False
     browser_type = "chrome"
@@ -38,6 +49,10 @@ def main() -> None:
         _run_async(_auth_login())
     elif len(args) >= 2 and args[0] == "auth" and args[1] == "list":
         _run_async(_auth_list())
+    elif len(args) >= 2 and args[0] == "auth" and args[1] == "logout":
+        _run_async(_auth_logout())
+    elif len(args) >= 1 and args[0] == "credits":
+        _run_async(_credits())
     elif len(args) >= 1 and args[0] == "help":
         _print_help()
     else:
@@ -57,20 +72,27 @@ def _run_async(coro) -> None:
 
 async def _auth_login() -> None:
     from flow_mcp.auth import cmd_login
-
     await cmd_login()
 
 
 async def _auth_login_internal() -> None:
     from flow_mcp.auth import cmd_login_internal
-
     await cmd_login_internal()
 
 
 async def _auth_list() -> None:
     from flow_mcp.auth import cmd_list
-
     await cmd_list()
+
+
+async def _auth_logout() -> None:
+    from flow_mcp.auth import cmd_logout
+    await cmd_logout()
+
+
+async def _credits() -> None:
+    from flow_mcp.auth import cmd_credits
+    await cmd_credits()
 
 
 def _print_help() -> None:
@@ -79,7 +101,11 @@ def _print_help() -> None:
     print("  flow-mcp                    Iniciar MCP server (modo stdio)")
     print("  flow-mcp auth login         Iniciar sesión en Google Flow")
     print("  flow-mcp auth login --browser internal  Login con Chromium interno")
-    print("  flow-mcp auth list          Listar perfiles guardados\n")
+    print("  flow-mcp auth list          Listar perfiles guardados")
+    print("  flow-mcp auth logout        Eliminar perfil activo")
+    print("  flow-mcp credits            Consultar créditos restantes")
+    print("  flow-mcp --version          Mostrar versión")
+    print("  flow-mcp help               Mostrar ayuda\n")
 
 
 if __name__ == "__main__":

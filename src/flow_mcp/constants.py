@@ -45,5 +45,9 @@ PROJECT_CREATE_WAIT_MS: Final[int] = 5_000
 # ── MCP server identity ────────────────────────────────────────────────
 SERVER_NAME: Final[str] = "flow-image-server"
 
+# ── Upload ────────────────────────────────────────────────────────────────
+UPLOAD_POLL_INTERVAL_MS: Final[int] = 1_000    # check every 1s
+UPLOAD_TIMEOUT_MS: Final[int] = 20_000         # max wait for upload
+
 # ── Browser pool ────────────────────────────────────────────────────────
 BROWSER_IDLE_TIMEOUT_S: Final[int] = 0   # 0 = never expire (keeps MCP alive)
