@@ -107,6 +107,20 @@ class AccountManager:
             )
         return d
 
+    def switch_to(self, name: str) -> str:
+        """Switch to a specific account by name.
+
+        Raises ``ValueError`` if the name is not in the account list.
+        """
+        if name not in self._accounts:
+            raise ValueError(
+                f"Account '{name}' not found. Available: {', '.join(self._accounts)}"
+            )
+        self._current = self._accounts.index(name)
+        self._save_state()
+        log.info("account_manager.switched_to", account=name)
+        return name
+
     def switch_to_next(self) -> str | None:
         """Move to the next account in the list.
 
@@ -222,6 +236,11 @@ def resolve_active_profile() -> Path:
 def switch_account() -> str | None:
     """Switch to the next account. Returns the new name or raises."""
     return AccountManager.get_instance().switch_to_next()
+
+
+def switch_to_account(name: str) -> str:
+    """Switch to a specific account by name."""
+    return AccountManager.get_instance().switch_to(name)
 
 
 def reset_accounts() -> None:

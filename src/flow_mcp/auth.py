@@ -385,20 +385,7 @@ async def cmd_switch_account(name: str | None = None) -> None:
         if name not in accounts:
             print(f"  Account '{name}' not found in: {', '.join(accounts)}\n")
             return
-        # Reset singleton and force-load the named account
-        mgr.reset()  # back to start, but we need it at that index
-        # Find the index
-        for i, n in enumerate(accounts):
-            if n == name:
-                # We need to fast-forward to this index
-                break
-        # Better approach: recreate singleton with manual order
-        AccountManager.reset_instance()
-        # Set env var to pin the order
-        os.environ["GFLOW_ACCOUNTS"] = ",".join(accounts)
-        # Re-init — it will pin to first, which is 'name'
-        from flow_mcp.account_manager import AccountManager as AM2
-        mgr2 = AM2.get_instance()
+        mgr.switch_to(name)
         print(f"  ✅ Switched to account: {name}\n")
     else:
         try:
