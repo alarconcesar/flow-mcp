@@ -14,6 +14,7 @@ from typing import AsyncIterator
 import structlog
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 
+from flow_mcp.account_manager import resolve_active_profile
 from flow_mcp.chrome_helpers import channel_for_profile
 from flow_mcp.constants import BROWSER_ARGS, BROWSER_IDLE_TIMEOUT_S, VIEWPORT
 from flow_mcp.profile import resolve_profile
@@ -130,7 +131,7 @@ class _BrowserPool:
 
     async def _start(self) -> None:
         """Create the persistent browser context, auto-cleaning locks."""
-        self._profile_dir = resolve_profile()
+        self._profile_dir = resolve_active_profile()
         # Clean stale singleton locks before launch
         self._cleanup_profile_locks(self._profile_dir)
         channel = channel_for_profile(self._profile_dir)

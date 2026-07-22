@@ -25,7 +25,7 @@ from flow_mcp.constants import (
     MODELS,
     SERVER_NAME,
 )
-from flow_mcp.generator import GenerationError, generate_images
+from flow_mcp.generator import GenerationError, generate_images_with_fallback as generate_images
 
 log = structlog.get_logger("flow-mcp")
 

@@ -51,6 +51,11 @@ def main() -> None:
         _run_async(_auth_list())
     elif len(args) >= 2 and args[0] == "auth" and args[1] == "logout":
         _run_async(_auth_logout())
+    elif len(args) >= 2 and args[0] == "auth" and args[1] in ("accounts", "list-accounts"):
+        _run_async(_auth_accounts())
+    elif len(args) >= 2 and args[0] == "auth" and args[1] == "switch":
+        name = args[2] if len(args) >= 3 else None
+        _run_async(_auth_switch(name))
     elif len(args) >= 1 and args[0] == "credits":
         _run_async(_credits())
     elif len(args) >= 1 and args[0] == "help":
@@ -90,6 +95,16 @@ async def _auth_logout() -> None:
     await cmd_logout()
 
 
+async def _auth_accounts() -> None:
+    from flow_mcp.auth import cmd_accounts
+    await cmd_accounts()
+
+
+async def _auth_switch(name: str | None = None) -> None:
+    from flow_mcp.auth import cmd_switch_account
+    await cmd_switch_account(name)
+
+
 async def _credits() -> None:
     from flow_mcp.auth import cmd_credits
     await cmd_credits()
@@ -102,6 +117,8 @@ def _print_help() -> None:
     print("  flow-mcp auth login         Iniciar sesión en Google Flow")
     print("  flow-mcp auth login --browser internal  Login con Chromium interno")
     print("  flow-mcp auth list          Listar perfiles guardados")
+    print("  flow-mcp auth accounts      Listar cuentas con orden de prioridad")
+    print("  flow-mcp auth switch <name> Cambiar a cuenta activa manualmente")
     print("  flow-mcp auth logout        Eliminar perfil activo")
     print("  flow-mcp credits            Consultar créditos restantes")
     print("  flow-mcp --version          Mostrar versión")

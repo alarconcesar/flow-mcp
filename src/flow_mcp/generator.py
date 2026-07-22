@@ -15,6 +15,7 @@ from typing import Any, Callable
 import structlog
 from playwright.async_api import Page
 
+from flow_mcp.account_manager import AccountManager
 from flow_mcp.browser import capture_bearer_token
 from flow_mcp.browser_pool import acquire_page, release_context
 from flow_mcp.constants import (
@@ -61,6 +62,10 @@ class AuthError(GenerationError):
 
 class RateLimitedError(GenerationError):
     """HTTP 429 — too many requests."""
+
+
+class CreditExhaustedError(GenerationError):
+    """Account has run out of credits — switch to next account."""
 
 
 # ── Result type ───────────────────────────────────────────────────────────
@@ -307,6 +312,13 @@ async def _call_api_with_retry(
             )
 
         if raw.startswith("HTTP_403:"):
+            # 403 can mean: forbidden access OR credits exhausted
+            # Check the response body for credit-related messages
+            body = raw[len("HTTP_403:"):]
+            if any(kw in body.lower() for kw in ("credit", "quota", "billing", "trial", "subscription")):
+                raise CreditExhaustedError(
+                    f"Account credits exhausted (HTTP 403): {body[:200]}"
+                )
             raise GenerationError(
                 "HTTP 403 Forbidden — your account may not have access "
                 "to this model or feature."
@@ -619,3 +631,86 @@ async def generate_images(
 
     finally:
         await release_context(ctx)
+
+
+async def generate_images_with_fallback(
+    prompt: str,
+    model: str = "nano-pro",
+    count: int = 1,
+    aspect: str = "9:16",
+    output_dir: str | Path | None = None,
+    *,
+    _progress_cb: Callable[[int, int, str], None] | None = None,
+    reference_image: str | None = None,
+    resolution: str = "1k",
+) -> GenerationResult:
+    """Wrap ``generate_images`` with automatic account fallback.
+
+    If one account runs out of credits (``CreditExhaustedError``), switches
+    to the next configured account and retries. Continues until an account
+    succeeds or all are exhausted.
+
+    The bounce pool is closed between account switches so the next
+    account's browser profile is loaded fresh.
+    """
+    from flow_mcp.browser_pool import close_pool
+
+    mgr = AccountManager.get_instance()
+    attempted_accounts: list[str] = []
+    max_attempts = mgr.account_count + 1  # +1 so we try each once, then raise
+
+    for attempt in range(max_attempts):
+        account = mgr.active_name
+        if account:
+            attempted_accounts.append(account)
+
+        log.info(
+            "generate_images.attempt",
+            account=account,
+            attempt=attempt + 1,
+            total=mgr.account_count,
+        )
+
+        try:
+            return await generate_images(
+                prompt=prompt,
+                model=model,
+                count=count,
+                aspect=aspect,
+                output_dir=output_dir,
+                _progress_cb=_progress_cb,
+                reference_image=reference_image,
+                resolution=resolution,
+            )
+        except CreditExhaustedError as exc:
+            log.warning(
+                "account.credits_exhausted",
+                account=account,
+                error=str(exc),
+            )
+            # Close the pool so the next account gets a fresh browser
+            await close_pool()
+
+            try:
+                next_account = mgr.switch_to_next()
+                if next_account and attempt < max_attempts - 1:
+                    log.info(
+                        "account.switching",
+                        from_account=account,
+                        to_account=next_account,
+                    )
+                    continue
+            except RuntimeError:
+                pass
+
+            raise GenerationError(
+                f"All {len(attempted_accounts)} account(s) exhausted "
+                f"({', '.join(attempted_accounts)}). "
+                "Add more accounts via `flow-mcp auth login` or "
+                "set GFLOW_ACCOUNTS=name1,name2,name3."
+            ) from exc
+
+    raise GenerationError(
+        f"Tried {len(attempted_accounts)} account(s) "
+        f"({', '.join(attempted_accounts)}) without success."
+    )

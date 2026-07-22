@@ -50,6 +50,21 @@ def _find_authenticated_profile(root: Path) -> str | None:
     return None
 
 
+def _find_authenticated_profiles(root: Path) -> list[str]:
+    """Return names of ALL profiles that have a ``.gflow_account`` file.
+
+    The list is ordered by filesystem sort (typically creation order).
+    """
+    result: list[str] = []
+    for profile_dir in _list_profiles(root):
+        if (profile_dir / ".gflow_account").exists():
+            name = _profile_name_from_dir(profile_dir)
+            result.append(name)
+    if result:
+        log.info("profile.auto_detected_all", names=result)
+    return result
+
+
 def resolve_profile() -> Path:
     """Resuelve el directorio del perfil de gflow-cli.
 

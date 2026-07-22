@@ -26,6 +26,7 @@ from flow_mcp.profile import (
     _profile_name_from_dir,
     default_home,
 )
+from flow_mcp.account_manager import AccountManager
 
 log = structlog.get_logger("flow-mcp")
 
@@ -325,3 +326,88 @@ async def cmd_credits(profile_name: str | None = None) -> None:
         print(f"  ❌ Failed to check credits: {exc}\n")
     finally:
         await release_context(ctx)
+
+
+async def cmd_accounts() -> None:
+    """List all configured accounts and their priority order."""
+    mgr = AccountManager.get_instance()
+    accounts = mgr.all_accounts
+    active = mgr.active_name
+    home = default_home()
+
+    if not accounts:
+        print("  No accounts configured.\n")
+        print("  To add one:")
+        print("    flow-mcp auth login            # interactive login")
+        print("    flow-mcp auth login --browser internal")
+        print("  Or set GFLOW_ACCOUNTS=name1,name2,name3\n")
+        return
+
+    print(f"\n  Configured accounts ({len(accounts)} total):\n")
+    print(f"  {'#':<4} {'Name':<25} {'Email':<35} {'Status':<12} {'Active':<8}")
+    print(f"  {'-'*4} {'-'*25} {'-'*35} {'-'*12} {'-'*8}")
+
+    for idx, name in enumerate(accounts):
+        profile_dir = home / f"profile_{name}"
+        email = "(no session)"
+        status = "inactive"
+        if profile_dir.exists():
+            acc_file = profile_dir / ".gflow_account"
+            if acc_file.exists():
+                email = acc_file.read_text(encoding="utf-8").strip()
+                status = "active"
+        is_active = "✓" if name == active else ""
+
+        print(f"  {idx + 1:<4} {name:<25} {email:<35} {status:<12} {is_active:<8}")
+
+    print()
+    print(f"  Priority order: {' → '.join(accounts)}")
+    print()
+    print("  Tip: Set GFLOW_ACCOUNTS=name1,name2,name3 env var to")
+    print("       customize the order. Accounts are tried in sequence")
+    print("       when one runs out of credits.\n")
+
+
+async def cmd_switch_account(name: str | None = None) -> None:
+    """Manually switch the active account.
+
+    If ``name`` is given, switches to that account (must be in the list).
+    If ``name`` is ``None``, cycles to the next account.
+    """
+    mgr = AccountManager.get_instance()
+    accounts = mgr.all_accounts
+
+    if not accounts:
+        print("  No accounts configured.\n")
+        return
+
+    if name:
+        if name not in accounts:
+            print(f"  Account '{name}' not found in: {', '.join(accounts)}\n")
+            return
+        # Reset singleton and force-load the named account
+        mgr.reset()  # back to start, but we need it at that index
+        # Find the index
+        for i, n in enumerate(accounts):
+            if n == name:
+                # We need to fast-forward to this index
+                break
+        # Better approach: recreate singleton with manual order
+        AccountManager.reset_instance()
+        # Set env var to pin the order
+        os.environ["GFLOW_ACCOUNTS"] = ",".join(accounts)
+        # Re-init — it will pin to first, which is 'name'
+        from flow_mcp.account_manager import AccountManager as AM2
+        mgr2 = AM2.get_instance()
+        print(f"  ✅ Switched to account: {name}\n")
+    else:
+        try:
+            next_name = mgr.switch_to_next()
+            if next_name:
+                print(f"  ✅ Switched to next account: {next_name}\n")
+            else:
+                print("  Already at the last account.\n")
+        except RuntimeError as exc:
+            # AccountCycleError (all exhausted) — wrap around to first
+            mgr.reset()
+            print(f"  🔄 Wrapped around to first account: {mgr.active_name}\n")

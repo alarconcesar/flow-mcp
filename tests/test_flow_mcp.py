@@ -62,7 +62,7 @@ class TestConstants:
     def test_version_consistency(self) -> None:
         from flow_mcp import __version__
 
-        assert __version__ == "0.2.0"
+        assert __version__ == "0.3.0"
 
 
 # ── Generator (stateless helpers) ─────────────────────────────────────────
@@ -433,9 +433,10 @@ class TestMainCLI:
 
         _print_help()
         captured = capsys.readouterr()
-        assert "v0.2.0" in captured.out
+        assert "v0.3.0" in captured.out
         assert "auth login" in captured.out
         assert "--browser internal" in captured.out
+        assert "auth accounts" in captured.out
 
 
 # ── Server / Tool validation ─────────────────────────────────────────────
