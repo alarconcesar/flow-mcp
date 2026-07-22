@@ -96,7 +96,7 @@ async def _credits() -> None:
 
 
 def _print_help() -> None:
-    print("Flow MCP v0.2.0 — Google Flow image generation for Claude Code\n")
+    print("Flow MCP v0.3.0 — Google Flow image generation for Claude Code\n")
     print("USO:")
     print("  flow-mcp                    Iniciar MCP server (modo stdio)")
     print("  flow-mcp auth login         Iniciar sesión en Google Flow")
