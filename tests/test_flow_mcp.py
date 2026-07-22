@@ -1173,7 +1173,6 @@ class TestGenerateVideo:
         assert "proj-456" in desc
         assert "labs.google/fx/tools/flow" in desc
 
-    @pytest.mark.asyncio
     def test_resolve_video_model_key(self) -> None:
         from flow_mcp.generator import _resolve_video_model_key
 
@@ -1212,9 +1211,13 @@ class TestGenerateVideo:
         with pytest.raises(GenerationError, match="Unknown video aspect"):
             await generate_video("test", aspect="99:99", output_dir=str(tmp_path))
 
+        # 1:1 with omni-flash
+        with pytest.raises(GenerationError, match="1:1 aspect ratio is not supported by 'omni-flash'"):
+            await generate_video("test", model="omni-flash", aspect="1:1", output_dir=str(tmp_path))
+
         # Bad duration
         with pytest.raises(GenerationError, match="Invalid duration"):
-            await generate_video("test", duration=10, output_dir=str(tmp_path))
+            await generate_video("test", duration=99, output_dir=str(tmp_path))
 
     @pytest.mark.asyncio
     async def test_generate_video_first_account_succeeds(
@@ -1358,7 +1361,7 @@ async def test_generate_video_tool_validation():
     assert "Invalid video aspect" in data.get("error", "")
 
     # Invalid duration
-    result = await generate_video_tool(prompt="test", duration=10)
+    result = await generate_video_tool(prompt="test", duration=99)
     data = json.loads(result)
     assert data.get("success") is False
     assert "Invalid duration" in data.get("error", "")

@@ -1066,6 +1066,8 @@ async def generate_video(
         raise GenerationError(f"Unknown video model '{model}'. Valid: {', '.join(VIDEO_MODELS)}")
     if aspect not in VIDEO_ASPECT_RATIOS:
         raise GenerationError(f"Unknown video aspect '{aspect}'. Valid: {', '.join(VIDEO_ASPECT_RATIOS)}")
+    if aspect == "1:1" and model == "omni-flash":
+        raise GenerationError("1:1 aspect ratio is not supported by 'omni-flash'. Use '9:16' or '16:9'.")
     if duration not in VIDEO_DURATIONS:
         raise GenerationError(f"Invalid duration {duration}s. Valid: {VIDEO_DURATIONS}")
     
