@@ -28,7 +28,7 @@ images/day).
 |------------|-------|
 | **Python 3.11+** (or [uv](https://docs.astral.sh/uv/)) | |
 | **Google Chrome** or Playwright's Chromium | For authentication & generation |
-| **Xvfb** (Linux headless only) | `:99` display |
+| **Xvfb** (Linux headless only) | For `auth login` only (MCP server runs headless) |
 
 ## Installation
 
@@ -133,9 +133,12 @@ Try rephrasing — avoid violence, NSFW, or trademarked content.
 
 ### Linux headless
 ```bash
-Xvfb :99 -screen 0 1280x720x24 &   # or let flow-mcp auto-start it
-flow-mcp auth login --browser internal
+# Only needed for authentication (the MCP server itself runs headless)
+Xvfb :99 -screen 0 1280x720x24 &
+DISPLAY=:99 flow-mcp auth login --browser internal
 ```
+
+The MCP server (`flow-mcp`) now runs completely headless — no Xvfb needed for generation.
 
 ### Profile not found
 ```bash
