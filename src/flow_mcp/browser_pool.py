@@ -7,6 +7,7 @@ loading the profile, and navigating to Flow on every generation.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -28,6 +29,28 @@ class _BrowserPool:
             # ... do stuff with page ...
             # close() marks the context available for reuse
     """
+
+    _LOCK_PATTERNS: tuple[str, ...] = (
+        "SingletonLock", "SingletonCookie", "SingletonSocket",
+    )
+
+    @staticmethod
+    def _cleanup_profile_locks(profile_dir: Path) -> None:
+        """Remove Chrome singleton locks that prevent profile reuse."""
+        for pattern in _BrowserPool._LOCK_PATTERNS:
+            lock_path = profile_dir / pattern
+            if lock_path.exists():
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+            # Also check Default subdir
+            default_lock = profile_dir / "Default" / pattern
+            if default_lock.exists():
+                try:
+                    default_lock.unlink()
+                except OSError:
+                    pass
 
     def __init__(self) -> None:
         self._pw: Playwright | None = None
@@ -74,8 +97,14 @@ class _BrowserPool:
                 self._schedule_expiry()
                 log.debug("browser.context_released")
             else:
-                # Temp context, close it
+                # Temp context — close the browser too, not just the context
+                browser = getattr(ctx, "_pool_browser", None)
                 await ctx.close()
+                if browser:
+                    try:
+                        await browser.close()
+                    except Exception:
+                        pass
 
     async def close(self) -> None:
         """Shut down the pool and release all resources."""
@@ -100,8 +129,10 @@ class _BrowserPool:
     # ── Internal ────────────────────────────────────────────────────────
 
     async def _start(self) -> None:
-        """Create the persistent browser context."""
+        """Create the persistent browser context, auto-cleaning locks."""
         self._profile_dir = resolve_profile()
+        # Clean stale singleton locks before launch
+        self._cleanup_profile_locks(self._profile_dir)
         channel = channel_for_profile(self._profile_dir)
 
         self._pw = await async_playwright().start()
@@ -124,7 +155,9 @@ class _BrowserPool:
             args=["--no-sandbox", "--disable-gpu"],
         )
         ctx = await browser.new_context(viewport=VIEWPORT)
-        return ctx  # caller must close
+        # Store a reference so release() can close both context + browser
+        ctx._pool_browser = browser  # type: ignore[attr-defined]
+        return ctx  # caller must release
 
     def _schedule_expiry(self) -> None:
         if BROWSER_IDLE_TIMEOUT_S > 0:

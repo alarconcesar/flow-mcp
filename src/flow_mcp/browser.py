@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -19,7 +20,8 @@ _XVFB_STARTED: bool = False
 
 
 def ensure_xvfb() -> None:
-    """Start Xvfb on ``:99`` when running on Linux without a display.
+    """Start Xvfb on ``:99`` when running on Linux without a display, and
+    set the DISPLAY environment variable so child processes can find it.
 
     No-op on Windows/macOS or if Xvfb is already running.
     """
@@ -37,6 +39,8 @@ def ensure_xvfb() -> None:
     )
     if "Xvfb" in ret.stdout:
         _XVFB_STARTED = True
+        if not os.environ.get("DISPLAY"):
+            os.environ["DISPLAY"] = ":99"
         return
 
     subprocess.Popen(
@@ -46,6 +50,7 @@ def ensure_xvfb() -> None:
     )
     log.info("xvfb.started", display=":99")
     time.sleep(1)
+    os.environ["DISPLAY"] = ":99"
     _XVFB_STARTED = True
 
 

@@ -7,7 +7,6 @@ import base64
 import json
 import re
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -89,7 +88,6 @@ async def _await_window_var(
         val = await page.evaluate(f"window[{json.dumps(var_name)}]")
         if val is not None:
             return val
-        elapsed = time.monotonic() - (deadline - timeout_ms / 1000)
         if time.monotonic() >= deadline:
             return None
         await asyncio.sleep(poll_ms / 1000)
@@ -521,9 +519,12 @@ async def _upscale_image(
         }}
     }})();"""
     await page.add_script_tag(content=js)
-    await page.wait_for_timeout(15_000)
 
-    result = await page.evaluate("window.__up_img")
+    # Dynamic polling instead of fixed timeout
+    result = await _await_window_var(
+        page, "__up_img",
+        poll_ms=2000, timeout_ms=60_000,
+    )
     if not result or isinstance(result, str) and (result.startswith("HTTP_") or result.startswith("ERR:")):
         log.warning("upscale.api_failed", media_id=media_id, result=str(result)[:100])
         return None
