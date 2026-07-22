@@ -475,10 +475,14 @@ async def generate_images(
     wire_aspect = ASPECT_RATIOS.get(aspect, "IMAGE_ASPECT_RATIO_PORTRAIT")
     timestamp = str(int(time.time() * 1000))
     do_upscale = resolution.lower() in ("2k", "4k")
+    # Only used when do_upscale is True. For "1k" (default), this is never
+    # read — we download the original. Keep a default so the dict access
+    # is safe even if resolution is unexpected.
     wire_resolution = {
+        "1k": "UPSAMPLE_IMAGE_RESOLUTION_2K",  # unused for 1k, but defined
         "2k": "UPSAMPLE_IMAGE_RESOLUTION_2K",
         "4k": "UPSAMPLE_IMAGE_RESOLUTION_4K",
-    }[resolution.lower()]
+    }.get(resolution.lower(), "UPSAMPLE_IMAGE_RESOLUTION_2K")
 
     (page, ctx) = await acquire_page()
 
