@@ -992,10 +992,51 @@ async def _resolve_video_url(page: Page, media_name: str) -> str:
     raise GenerationError(f"Video URL fetch returned unexpected: {raw}")
 
 
+def _resolve_video_model_key(model: str, duration: int, is_i2v: bool) -> str:
+    """Resolve the wire videoModelKey based on parameters.
+
+    Flow's backend names keys explicitly. We translate our clean aliases:
+    - omni-flash (abra):
+      - T2V: ``abra_t2v_<duration>s``
+      - I2V: ``abra_i2v_<duration>s``
+    - veo-lite:
+      - T2V: ``veo_3_1_t2v_lite_<duration>s``
+      - I2V: ``veo_3_1_i2v_s_lite_<duration>s``
+    - veo-fast:
+      - T2V: ``veo_3_1_t2v_fast_<duration>s``
+      - I2V: ``veo_3_1_i2v_s_fast_<duration>s``
+    - veo-quality:
+      - T2V: ``veo_3_1_t2v_quality_<duration>s``
+      - I2V: ``veo_3_1_i2v_s_quality_<duration>s``
+    """
+    base = VIDEO_MODELS[model]
+    
+    # 10s only supported by omni-flash (abra)
+    if duration == 10 and model != "omni-flash":
+        raise GenerationError("10s duration is only supported by the 'omni-flash' model")
+
+    # Mapping logic
+    if model == "omni-flash":
+        prefix = "abra_i2v" if is_i2v else "abra_t2v"
+        return f"{prefix}_{duration}s"
+        
+    # Veo 3.1 family
+    sub = "i2v_s" if is_i2v else "t2v"
+    tier = {
+        "veo-lite": "lite",
+        "veo-fast": "fast",
+        "veo-quality": "quality",
+    }[model]
+    
+    # For Veo 3.1, 4s and 6s have explicit suffixes. Default fallback is 4s.
+    dur_str = f"_{duration}s" if duration in (4, 6) else "_4s"
+    return f"{base}_{sub}_{tier}{dur_str}"
+
+
 async def generate_video(
     prompt: str,
     *,
-    model: str = "veo-fast",
+    model: str = "omni-flash",
     aspect: str = "9:16",
     duration: int = 4,
     output_dir: str | Path | None = None,
@@ -1009,27 +1050,28 @@ async def generate_video(
     prompt:
         Text description of the video to generate.
     model:
-        Model alias — see ``VIDEO_MODELS``. Default ``"veo-fast"`` is the
-        cheapest. The captured working key is ``abra_t2v_4s`` (Veo 2 Fast,
-        4s, 720p).
+        Model alias — see ``VIDEO_MODELS``. Default ``"omni-flash"`` is
+        the cheapest (maps to ``abra``).
     aspect:
         ``9:16`` (portrait, default), ``16:9`` (landscape), ``1:1`` (square).
     duration:
-        4, 6, or 8 seconds. Longer = more credits.
+        4, 6, 8, or 10 seconds. Longer = more credits. 10s only works for
+        ``omni-flash``.
     output_dir:
-        Where to save the generated MP4. Defaults to system temp.
+        Where to save the metadata (kept for API parity).
     reference_image:
         Optional path to a local image to use as image-to-video reference.
-        Requires the account to support I2V (most paid Flow plans do).
     """
     if model not in VIDEO_MODELS:
         raise GenerationError(f"Unknown video model '{model}'. Valid: {', '.join(VIDEO_MODELS)}")
-    wire_model = VIDEO_MODELS[model]
     if aspect not in VIDEO_ASPECT_RATIOS:
         raise GenerationError(f"Unknown video aspect '{aspect}'. Valid: {', '.join(VIDEO_ASPECT_RATIOS)}")
-    wire_aspect = VIDEO_ASPECT_RATIOS[aspect]
     if duration not in VIDEO_DURATIONS:
         raise GenerationError(f"Invalid duration {duration}s. Valid: {VIDEO_DURATIONS}")
+    
+    is_i2v = reference_image is not None
+    wire_model = _resolve_video_model_key(model, duration, is_i2v)
+    wire_aspect = VIDEO_ASPECT_RATIOS[aspect]
     timestamp = str(int(time.time() * 1000))
     seed = random.randint(1, 2_147_483_647)
 
@@ -1201,7 +1243,7 @@ async def generate_video(
 async def generate_video_with_fallback(
     prompt: str,
     *,
-    model: str = "veo-fast",
+    model: str = "omni-flash",
     aspect: str = "9:16",
     duration: int = 4,
     output_dir: str | Path | None = None,

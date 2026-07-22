@@ -212,17 +212,17 @@ def main() -> None:
         "Bypasses the Flow Agent chat quota by calling the API directly "
         "from a browser context with your saved authentication. "
         "Supports text-to-video and image-to-video (pass reference_image path). "
-        "Models: veo-fast (cheapest, ~4s, 720p), veo (standard quality), "
-        "veo-hq (highest quality, most expensive). "
+        "Models: omni-flash (default, cheapest, 7 credits for 4s), veo-lite, "
+        "veo-fast, veo-quality. "
         "Aspects: 9:16 (default portrait), 16:9 (landscape), 1:1 (square). "
-        "Durations: 4 (default, cheapest), 6, 8 seconds. "
+        "Durations: 4 (default, cheapest), 6, 8, 10 (omni-flash only) seconds. "
         "Multi-account fallback: rotates across GFLOW_ACCOUNTS when one "
         "runs out of credits."
     ),
 )
 async def generate_video_tool(
     prompt: str,
-    model: ALLOWED_VIDEO_MODELS = "veo-fast",  # type: ignore[assignment]
+    model: ALLOWED_VIDEO_MODELS = "omni-flash",  # type: ignore[assignment]
     aspect: ALLOWED_VIDEO_ASPECTS = "9:16",  # type: ignore[assignment]
     duration: int = 4,
     reference_image: str | None = None,
@@ -232,11 +232,10 @@ async def generate_video_tool(
 
     Args:
         prompt: Text description of the video to generate.
-        model: Model alias (default: "veo-fast" — cheapest).
-            Use "veo" for standard quality, "veo-2-fast" for the
-            confirmed-working Veo 2 Fast.
+        model: Model alias (default: "omni-flash" — cheapest).
+            Use "veo-lite" / "veo-fast" / "veo-quality" for Veo 3.1 family.
         aspect: Aspect ratio (9:16 default, 16:9, 1:1).
-        duration: Length in seconds — 4, 6, or 8. Default 4 (cheapest).
+        duration: Length in seconds — 4, 6, 8, or 10. Default 4 (cheapest).
         reference_image: Optional path to a local image for I2V.
         ctx: FastMCP context (injected automatically) for progress reporting.
 
@@ -245,8 +244,8 @@ async def generate_video_tool(
 
     Cost warning:
         Video is significantly more expensive than image generation. A
-        single 4s veo-fast clip costs ~20-50 credits. Plan accordingly
-        and prefer the "veo-fast" + 4s combo unless quality is critical.
+        single 4s omni-flash clip costs 7 credits, while veo models can
+        cost 20-50+ credits. Plan accordingly.
     """
     # ── Validate ──────────────────────────────────────────────────────
     model = model.lower()

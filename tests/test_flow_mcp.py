@@ -1063,12 +1063,11 @@ class TestVideoConstants:
     def test_video_models(self) -> None:
         from flow_mcp.constants import VIDEO_MODELS, ALLOWED_VIDEO_MODELS
 
+        assert "omni-flash" in VIDEO_MODELS
+        assert "veo-lite" in VIDEO_MODELS
         assert "veo-fast" in VIDEO_MODELS
-        assert "veo-2-fast" in VIDEO_MODELS
-        assert "veo" in VIDEO_MODELS
-        assert "veo-hq" in VIDEO_MODELS
-        # veo-2-fast is the captured-working key
-        assert VIDEO_MODELS["veo-2-fast"] == "abra_t2v_4s"
+        assert "veo-quality" in VIDEO_MODELS
+        assert VIDEO_MODELS["omni-flash"] == "abra"
 
     def test_video_aspects(self) -> None:
         from flow_mcp.constants import VIDEO_ASPECT_RATIOS
@@ -1163,18 +1162,45 @@ class TestGenerateVideo:
         result = VideoResult(
             media_name="abc-123-def",
             project_id="proj-456",
-            model="veo-fast",
+            model="omni-flash",
             duration_s=4,
             media_blob_size=1_234_567,
         )
         desc = result.describe()
-        assert "veo-fast" in desc
+        assert "omni-flash" in desc
         assert "4s" in desc
         assert "abc-123-def" in desc
         assert "proj-456" in desc
         assert "labs.google/fx/tools/flow" in desc
 
     @pytest.mark.asyncio
+    def test_resolve_video_model_key(self) -> None:
+        from flow_mcp.generator import _resolve_video_model_key
+
+        # omni-flash (abra) family
+        assert _resolve_video_model_key("omni-flash", 4, is_i2v=False) == "abra_t2v_4s"
+        assert _resolve_video_model_key("omni-flash", 10, is_i2v=False) == "abra_t2v_10s"
+        assert _resolve_video_model_key("omni-flash", 4, is_i2v=True) == "abra_i2v_4s"
+        assert _resolve_video_model_key("omni-flash", 8, is_i2v=True) == "abra_i2v_8s"
+
+        # veo-lite family
+        assert _resolve_video_model_key("veo-lite", 4, is_i2v=False) == "veo_3_1_t2v_lite_4s"
+        assert _resolve_video_model_key("veo-lite", 6, is_i2v=False) == "veo_3_1_t2v_lite_6s"
+        assert _resolve_video_model_key("veo-lite", 4, is_i2v=True) == "veo_3_1_i2v_s_lite_4s"
+
+        # veo-fast family
+        assert _resolve_video_model_key("veo-fast", 4, is_i2v=False) == "veo_3_1_t2v_fast_4s"
+        assert _resolve_video_model_key("veo-fast", 4, is_i2v=True) == "veo_3_1_i2v_s_fast_4s"
+
+        # veo-quality family
+        assert _resolve_video_model_key("veo-quality", 4, is_i2v=False) == "veo_3_1_t2v_quality_4s"
+        assert _resolve_video_model_key("veo-quality", 4, is_i2v=True) == "veo_3_1_i2v_s_quality_4s"
+
+        # 10s check
+        from flow_mcp.generator import GenerationError
+        with pytest.raises(GenerationError, match="10s duration is only supported"):
+            _resolve_video_model_key("veo-lite", 10, is_i2v=False)
+
     async def test_generate_video_validates_args(self, tmp_path: Path) -> None:
         from flow_mcp.generator import GenerationError, generate_video
 
@@ -1206,7 +1232,7 @@ class TestGenerateVideo:
 
         fake_result = VideoResult(
             media_name="m1", project_id="p1",
-            model="veo-fast", duration_s=4,
+            model="omni-flash", duration_s=4,
         )
 
         with patch(
@@ -1216,7 +1242,7 @@ class TestGenerateVideo:
             with patch("flow_mcp.browser_pool.close_pool", AsyncMock()):
                 result = await generate_video_with_fallback(
                     prompt="hi",
-                    model="veo-fast",
+                    model="omni-flash",
                     aspect="9:16",
                     duration=4,
                 )
@@ -1242,7 +1268,7 @@ class TestGenerateVideo:
 
         fake_result = VideoResult(
             media_name="m2", project_id="p2",
-            model="veo-fast", duration_s=4,
+            model="omni-flash", duration_s=4,
         )
 
         with patch(
@@ -1255,7 +1281,7 @@ class TestGenerateVideo:
             with patch("flow_mcp.browser_pool.close_pool", AsyncMock()):
                 result = await generate_video_with_fallback(
                     prompt="hi",
-                    model="veo-fast",
+                    model="omni-flash",
                 )
                 assert result is fake_result
                 assert AccountManager.get_instance().active_name == "v2"

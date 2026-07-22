@@ -58,19 +58,19 @@ BROWSER_IDLE_TIMEOUT_S: Final[int] = 0   # 0 = never expire (keeps MCP alive)
 # (Jul 2026, ceasr1 profile, model "abra_t2v_4s" = Veo 2 Fast, 4s, 720p).
 #
 # Models: each key is what the user passes to the MCP tool; the value is
-# the ``videoModelKey`` the API expects. "veo-fast" is the cheapest, "veo"
-# is the standard, "veo-hq" is the highest quality (and most expensive).
+# the base model key. We dynamically append `_t2v_` or `_i2v_` and the
+# duration (4s/6s/8s/10s) at runtime based on whether `reference_image`
+# is provided and the selected duration.
 #
-# We only know one model key for sure ("abra_t2v_4s") but the API also
-# accepts "veo-3.0-generate-preview" / "veo-3.0-fast-generate-preview" for
-# the public Veo 3 family. We expose them under friendly aliases.
+# "omni-flash" (default) maps to the "abra" family. It is the cheapest
+# option, costing only 7 credits for 4s (T2V and I2V).
 VIDEO_MODELS: Final[dict[str, str]] = {
-    "veo-fast":      "veo-3.0-fast-generate-preview",   # cheapest, fastest
-    "veo-2-fast":    "abra_t2v_4s",                     # confirmed working
-    "veo":           "veo-3.0-generate-preview",        # standard quality
-    "veo-hq":        "veo-3.0-generate-preview",        # alias; same as veo
+    "omni-flash":    "abra",                            # default, cheapest (7 credits)
+    "veo-lite":      "veo_3_1",                         # Veo 3.1 Lite (relaxed)
+    "veo-fast":      "veo_3_1",                         # Veo 3.1 Fast
+    "veo-quality":   "veo_3_1",                         # Veo 3.1 Quality
 }
-ALLOWED_VIDEO_MODELS = Literal["veo-fast", "veo-2-fast", "veo", "veo-hq"]
+ALLOWED_VIDEO_MODELS = Literal["omni-flash", "veo-lite", "veo-fast", "veo-quality"]
 
 VIDEO_ASPECT_RATIOS: Final[dict[str, str]] = {
     "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT",
@@ -80,7 +80,8 @@ VIDEO_ASPECT_RATIOS: Final[dict[str, str]] = {
 ALLOWED_VIDEO_ASPECTS = Literal["9:16", "16:9", "1:1"]
 
 # 4s is the cheapest; 6s and 8s cost more credits. We default to 4s.
-VIDEO_DURATIONS: Final[tuple[int, ...]] = (4, 6, 8)
+# 10s is only supported by the "omni-flash" (abra) model family.
+VIDEO_DURATIONS: Final[tuple[int, ...]] = (4, 6, 8, 10)
 
 # Status values returned by batchCheckAsyncVideoGenerationStatus
 VIDEO_STATUS_PENDING = "MEDIA_GENERATION_STATUS_SCHEDULED"
