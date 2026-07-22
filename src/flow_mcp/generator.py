@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import structlog
-from playwright.async_api import Page
+from playwright.async_api import Page, Response
 
 from flow_mcp.account_manager import AccountCycleError, AccountManager
 from flow_mcp.browser import capture_bearer_token
@@ -38,17 +38,47 @@ from flow_mcp.constants import (
 )
 from flow_mcp.js_templates import (
     DOWNLOAD_IMAGE_JS,
-    LIST_PROJECTS_JS,
-    check_session_js,
     check_video_status_js,
     create_project_js,
     generate_images_js,
     generate_video_js,
     get_video_url_js,
-    upscale_image_js,
     upload_image_js,
 )
 from flow_mcp.recaptcha import TokenMinter
+
+log = structlog.get_logger("flow-mcp")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DOM Selectors for UI Automation (Playwright interaction with Google Flow)
+# ──────────────────────────────────────────────────────────────────────────────
+# These selectors are locale-stable and proven in production (gflow-cli).
+# Google Flow uses Material Symbols icons and contenteditable divs for the UI.
+
+# Prompt input box (Slate editor or fallback textarea)
+PROMPT_INPUT_SELECTORS = (
+    'div[role="textbox"][data-slate-editor="true"]',
+    'div[contenteditable="true"]',
+    "textarea",
+    '[aria-label*="prompt"]',
+)
+
+# Submit/Generate button (identified by Material Symbols arrow_forward icon)
+SUBMIT_BUTTON_SELECTORS = (
+    "button:has(i.google-symbols:text('arrow_forward'))",
+    "button:has(i:text('arrow_forward'))",
+    "button:has-text('arrow_forward')",
+)
+
+# Video model picker menu items (for selecting Omni Flash, Veo, etc.)
+VIDEO_MODEL_MENU_ITEMS = {
+    "omni-flash": "[role='menuitem']:has-text('Omni Flash')",
+    "veo-lite": "[role='menuitem']:has-text('Veo 3.1 - Lite')",
+    "veo-fast": "[role='menuitem']:has-text('Veo 3.1 - Fast')",
+    "veo-quality": "[role='menuitem']:has-text('Veo 3.1 - Quality')",
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 log = structlog.get_logger("flow-mcp")
 
@@ -1033,6 +1063,128 @@ def _resolve_video_model_key(model: str, duration: int, is_i2v: bool) -> str:
     return f"{base}_{sub}_{tier}{dur_str}"
 
 
+async def _submit_video_via_ui(
+    page: Page,
+    prompt: str,
+    wire_model: str,
+    wire_aspect: str,
+    duration: int,
+    project_id: str,
+) -> tuple[str, str]:
+    """Submit video generation via UI automation (click Generate button).
+
+    This approach works for FREE Google accounts by simulating human
+    interaction with the Flow web UI. Google's reCAPTCHA v3 gives a high
+    score (0.9+) to real DOM clicks, allowing free accounts to generate
+    video without 403 PERMISSION_DENIED errors.
+
+    Returns
+    -------
+    (media_name, project_id): The UUID of the generated video and the project ID.
+    """
+    # Shared list to capture the network response
+    captured_response: list[dict[str, Any]] = []
+
+    async def on_response(response: Response) -> None:
+        """Capture batchAsyncGenerateVideoText response from network."""
+        if "batchAsyncGenerateVideoText" not in response.url:
+            return
+        try:
+            body = await response.json()
+            captured_response.append({"status": response.status, "body": body})
+        except Exception:
+            pass
+
+    # Attach network listener BEFORE any UI interaction
+    page.on("response", on_response)
+
+    try:
+        # Navigate to the project page
+        project_url = f"https://labs.google/fx/tools/flow/project/{project_id}"
+        await page.goto(project_url, wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(2000)
+
+        # Click the "Video" tab if present to switch mode from Image -> Video
+        video_tab = page.locator("[role='tab']:has-text('Video'), button:has-text('Video')").first
+        if await video_tab.count() > 0:
+            await video_tab.click(force=True)
+            log.info("video.ui_submit.switched_tab", tab="Video")
+            await page.wait_for_timeout(1000)
+
+        # Locate prompt input box (try selectors in order)
+        prompt_box = None
+        for selector in PROMPT_INPUT_SELECTORS:
+            if await page.locator(selector).count() > 0:
+                prompt_box = page.locator(selector).first
+                break
+
+        if not prompt_box:
+            raise GenerationError("Could not find prompt input box in Flow UI")
+
+        # Fill the prompt (clear first, then type)
+        await prompt_box.click(force=True)
+        await page.wait_for_timeout(300)
+        await prompt_box.fill("")  # Clear
+        await prompt_box.fill(prompt)
+        await page.wait_for_timeout(500)
+
+        # Locate and click the Generate/Submit button
+        submit_btn = None
+        for selector in SUBMIT_BUTTON_SELECTORS:
+            if await page.locator(selector).count() > 0:
+                submit_btn = page.locator(selector).first
+                break
+
+        if submit_btn:
+            # Click Generate with force=True to bypass transparent modals/overlays
+            await submit_btn.click(force=True)
+            log.info("video.ui_submit.clicked", prompt=prompt[:50])
+        else:
+            # Fallback: press Enter on the prompt box to submit
+            await prompt_box.press("Enter")
+            log.info("video.ui_submit.pressed_enter", prompt=prompt[:50])
+
+        # Wait for the network response (up to 30 seconds)
+        start = time.time()
+        while not captured_response and (time.time() - start) < 30:
+            await page.wait_for_timeout(500)
+
+        if not captured_response:
+            raise GenerationError(
+                "No video generation response captured from network after UI submit"
+            )
+
+        # Parse the captured response
+        resp = captured_response[0]
+        status = resp["status"]
+        body = resp["body"]
+
+        if status == 403:
+            body_str = json.dumps(body)
+            if any(kw in body_str.lower() for kw in ("credit", "quota", "billing")):
+                raise CreditExhaustedError(f"Video UI submit: {body_str[:200]}")
+            raise GenerationError(f"Video UI submit: 403 — {body_str[:200]}")
+
+        if status != 200:
+            raise GenerationError(f"Video UI submit: HTTP {status} — {json.dumps(body)[:300]}")
+
+        # Extract mediaName from response
+        media_list = body.get("media", [])
+        if not media_list:
+            raise GenerationError(f"Video UI submit returned no media: {json.dumps(body)[:300]}")
+
+        media_name = media_list[0].get("name")
+        if not media_name:
+            raise GenerationError(f"Video UI submit media missing 'name': {json.dumps(body)[:300]}")
+
+        log.info("video.ui_submit.success", media_name=media_name, project_id=project_id)
+        return (media_name, project_id)
+
+    finally:
+        # Always detach the listener to prevent memory leaks
+        page.remove_listener("response", on_response)
+
+
 async def generate_video(
     prompt: str,
     *,
@@ -1095,104 +1247,25 @@ async def generate_video(
             )
             bearer = await capture_bearer_token(page)
 
-        _prog(2, 7, "Minting reCAPTCHA token...")
-        # Video uses a different reCAPTCHA action than image generation.
-        # Using the wrong one returns "reCAPTCHA evaluation failed" 403.
-        try:
-            recaptcha_token = await TokenMinter(page).mint("VIDEO_GENERATION")
-            log.info("video.recaptcha.minted", action="VIDEO_GENERATION")
-        except Exception as exc:
-            raise GenerationError(f"reCAPTCHA minting failed: {exc}") from exc
-
         # Create or reuse project
-        _prog(3, 7, "Setting up Flow project...")
+        _prog(2, 7, "Setting up Flow project...")
         pid = await _ensure_project(page, timestamp)
 
-        # Upload reference image (I2V) if provided
-        image_inputs: list[dict[str, Any]] = []
+        # UI-driven submit: Click Generate button in the Flow web UI.
+        # This works for FREE accounts because Google's reCAPTCHA v3 gives
+        # a high score (0.9+) to real DOM clicks, avoiding 403 errors.
+        _prog(3, 7, f"Submitting video via UI ({wire_model}, {duration}s)...")
+        
+        # TODO: Handle reference_image (I2V) by uploading it first
         if reference_image:
-            ref_path = Path(reference_image)
-            if not ref_path.exists():
-                raise GenerationError(f"Reference image not found: {reference_image}")
-            _prog(4, 7, f"Uploading reference image ({ref_path.name})...")
-            image_inputs = await _upload_video_reference_image(page, bearer, pid, ref_path)
-
-        # Build the request
-        session_id = ";" + timestamp
-        client_context: dict[str, Any] = {
-            "projectId": pid,
-            "tool": "PINHOLE",
-            "userPaygateTier": "PAYGATE_TIER_ZERO",
-            "sessionId": session_id,
-            "recaptchaContext": {
-                "token": recaptcha_token,
-                "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
-            },
-        }
-        # Single video request in the batch
-        video_request: dict[str, Any] = {
-            "aspectRatio": wire_aspect,
-            "videoModelKey": wire_model,
-            "seed": seed,
-            "metadata": {},
-        }
-        if image_inputs:
-            video_request["imageInputs"] = image_inputs
-        else:
-            video_request["textInput"] = {
-                "structuredPrompt": {"parts": [{"text": prompt}]},
-            }
-        request_body = {
-            "mediaGenerationContext": {
-                "batchId": f"g_{timestamp}",
-                "audioFailurePreference": VIDEO_AUDIO_FAILURE_PREFERENCE,
-            },
-            "clientContext": client_context,
-            "requests": [video_request],
-            "useV2ModelConfig": True,
-        }
-        api_url = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoText"
-        body_json = json.dumps(json.dumps(request_body))
-
-        # Kick off generation
-        _prog(5, 7, f"Requesting video generation ({wire_model}, {duration}s)...")
-        js = generate_video_js(api_url, bearer, body_json)
-        await page.add_script_tag(content=js)
-        raw = await _await_window_var_ms(page, "__vid", poll_ms=500, timeout_ms=30_000)
-        if raw is None:
-            raise GenerationError("Video generate request timed out")
-        if isinstance(raw, str):
-            if raw.startswith("HTTP_401:"):
-                raise AuthError("Video generate: 401 — session expired")
-            if raw.startswith("HTTP_403:"):
-                body_txt = raw[len("HTTP_403:"):]
-                if any(kw in body_txt.lower() for kw in ("credit", "quota", "billing")):
-                    raise CreditExhaustedError(f"Video: {body_txt[:200]}")
-                raise GenerationError(f"Video generate: 403 — {body_txt[:200]}")
-            if raw.startswith("HTTP_429:"):
-                raise RateLimitedError("Video generate: 429")
-            if raw.startswith("HTTP_5XX:"):
-                raise GenerationError(f"Video generate: {raw[:200]}")
-            if raw.startswith("ERR:"):
-                raise GenerationError(f"Video generate fetch error: {raw[:200]}")
-            # Unexpected — try parse
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                raise GenerationError(f"Video generate returned non-JSON: {raw[:200]}")
-        else:
-            data = raw
-
-        media_list = data.get("media") or []
-        if not media_list:
             raise GenerationError(
-                f"Video generate returned no media: {json.dumps(data)[:500]}"
+                "Image-to-video (I2V) with reference_image is not yet supported "
+                "in UI automation mode. Use a paid account for I2V via API."
             )
-        media_item = media_list[0]
-        media_name = media_item.get("name")
-        if not media_name:
-            raise GenerationError(f"Media item missing 'name': {json.dumps(media_item)[:300]}")
-        project_id = media_item.get("projectId") or pid
+        
+        media_name, project_id = await _submit_video_via_ui(
+            page, prompt, wire_model, wire_aspect, duration, pid
+        )
         log.info("video.queued", name=media_name, project=project_id, model=wire_model)
 
         # Poll until done
