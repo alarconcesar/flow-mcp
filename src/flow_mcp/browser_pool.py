@@ -135,16 +135,18 @@ class _BrowserPool:
         self._cleanup_profile_locks(self._profile_dir)
         channel = channel_for_profile(self._profile_dir)
 
+        is_headless = os.environ.get("GFLOW_HEADLESS", "1").lower() not in ("0", "false", "no", "off")
+
         self._pw = await async_playwright().start()
         self._ctx = await self._pw.chromium.launch_persistent_context(
             user_data_dir=str(self._profile_dir),
-            headless=True,
+            headless=is_headless,
             channel=channel or None,
             args=BROWSER_ARGS,
             viewport=VIEWPORT,
         )
         self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
-        log.info("browser.pool_started", profile=str(self._profile_dir), channel=channel)
+        log.info("browser.pool_started", profile=str(self._profile_dir), channel=channel, headless=is_headless)
 
     async def _start_new_context(self) -> BrowserContext:
         """Create a temporary non-persistent context (fallback when pool busy)."""

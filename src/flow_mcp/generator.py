@@ -682,27 +682,24 @@ async def generate_images(
 
 async def generate_images_with_fallback(
     prompt: str,
+    *,
     model: str = "nano-pro",
     count: int = 1,
     aspect: str = "9:16",
     output_dir: str | Path | None = None,
-    *,
     _progress_cb: Callable[[int, int, str], None] | None = None,
     reference_image: str | None = None,
     resolution: str = "1k",
 ) -> GenerationResult:
-    """Wrap ``generate_images`` with automatic account fallback.
+    """Wrap ``generate_images`` with automatic multi-account fallback.
 
     If one account runs out of credits (``CreditExhaustedError``), switches
     to the next configured account and retries. Continues until an account
     succeeds or all are exhausted.
-
-    The bounce pool is closed between account switches so the next
-    account's browser profile is loaded fresh.
     """
     from flow_mcp.browser_pool import close_pool
 
-    mgr = AccountManager.get_instance()
+    mgr = AccountManager.get_instance("image")
     attempted_accounts: list[str] = []
     max_attempts = mgr.account_count + 1  # +1 so we try each once, then raise
 
@@ -1334,7 +1331,7 @@ async def generate_video_with_fallback(
     """
     from flow_mcp.browser_pool import close_pool
 
-    mgr = AccountManager.get_instance()
+    mgr = AccountManager.get_instance("video")
     attempted_accounts: list[str] = []
     max_attempts = mgr.account_count + 1
 

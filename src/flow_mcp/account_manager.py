@@ -55,11 +55,11 @@ class AccountManager:
 
     _instance: ClassVar[AccountManager | None] = None
 
-    def __init__(self) -> None:
+    def __init__(self, media_type: str | None = None) -> None:
         self._home = default_home()
         self._accounts: list[str] = []
         self._current: int = 0
-        self._load_accounts()
+        self._load_accounts(media_type=media_type)
         self._load_state()
         log.info(
             "account_manager.init",
@@ -159,18 +159,26 @@ class AccountManager:
 
     # ── Internal ────────────────────────────────────────────────────────
 
-    def _load_accounts(self) -> None:
+    def _load_accounts(self, media_type: str | None = None) -> None:
         """Load the ordered list of accounts.
 
         Priority:
-        1. ``GFLOW_ACCOUNTS`` env var (comma-separated profile names).
-           Only names whose profile directory actually exists on disk are
-           kept; missing ones are logged as warnings so typos surface
-           instead of silently breaking generation later.
-        2. All authenticated profiles (any with ``.gflow_account``).
-        3. Fallback to ``["default"]`` (will error later if not found).
+        1. ``GFLOW_IMAGE_ACCOUNTS`` or ``GFLOW_VIDEO_ACCOUNTS`` if media_type is provided.
+        2. ``GFLOW_ACCOUNTS`` env var (comma-separated profile names).
+        3. All authenticated profiles (any with ``.gflow_account``).
+        4. Fallback to ``["default"]``.
         """
-        env = os.environ.get("GFLOW_ACCOUNTS", "").strip()
+        env_key = "GFLOW_ACCOUNTS"
+        if media_type == "image" and os.environ.get("GFLOW_IMAGE_ACCOUNTS"):
+            env_key = "GFLOW_IMAGE_ACCOUNTS"
+        elif media_type == "video" and os.environ.get("GFLOW_VIDEO_ACCOUNTS"):
+            env_key = "GFLOW_VIDEO_ACCOUNTS"
+
+        env = os.environ.get(env_key, "").strip()
+        if not env and env_key != "GFLOW_ACCOUNTS":
+            # Fallback to main GFLOW_ACCOUNTS if role-specific var is empty
+            env = os.environ.get("GFLOW_ACCOUNTS", "").strip()
+            env_key = "GFLOW_ACCOUNTS"
         if env:
             requested = [n.strip() for n in env.split(",") if n.strip()]
             if requested:
@@ -244,10 +252,15 @@ class AccountManager:
     # ── Singleton ───────────────────────────────────────────────────────
 
     @classmethod
-    def get_instance(cls) -> AccountManager:
-        """Return the module-level singleton."""
+    def get_instance(cls, media_type: str | None = None) -> AccountManager:
+        """Return the module-level singleton. If media_type is supplied,
+        re-evaluates account priority according to GFLOW_IMAGE_ACCOUNTS or
+        GFLOW_VIDEO_ACCOUNTS env vars.
+        """
         if cls._instance is None:
-            cls._instance = cls()
+            cls._instance = cls(media_type=media_type)
+        elif media_type:
+            cls._instance._load_accounts(media_type)
         return cls._instance
 
     @classmethod

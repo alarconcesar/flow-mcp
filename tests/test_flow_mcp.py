@@ -595,6 +595,31 @@ class TestAccountManager:
 
         AccountManager.reset_instance()
 
+    def test_role_specific_env_vars(self, tmp_path: Path) -> None:
+        """GFLOW_IMAGE_ACCOUNTS and GFLOW_VIDEO_ACCOUNTS override GFLOW_ACCOUNTS."""
+        from flow_mcp.account_manager import AccountManager
+
+        _make_profile(tmp_path, "paid_img", "paid@x.com")
+        _make_profile(tmp_path, "free_vid1", "free1@x.com")
+        _make_profile(tmp_path, "free_vid2", "free2@x.com")
+
+        with patch.dict(
+            os.environ,
+            {
+                "GFLOW_ACCOUNTS": "paid_img,free_vid1,free_vid2",
+                "GFLOW_IMAGE_ACCOUNTS": "paid_img",
+                "GFLOW_VIDEO_ACCOUNTS": "free_vid1,free_vid2",
+                "GFLOW_CLI_HOME": str(tmp_path),
+            },
+        ):
+            mgr_img = AccountManager(media_type="image")
+            assert mgr_img.all_accounts == ["paid_img"]
+
+            AccountManager.reset_instance()
+
+            mgr_vid = AccountManager(media_type="video")
+            assert mgr_vid.all_accounts == ["free_vid1", "free_vid2"]
+
     def test_load_from_env(self, tmp_path: Path) -> None:
         """GFLOW_ACCOUNTS env var is honored (only existing profiles)."""
         from flow_mcp.account_manager import AccountManager
