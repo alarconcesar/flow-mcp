@@ -14,8 +14,11 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import structlog
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.server import Context
+try:
+    from fastmcp import Context, FastMCP
+except ImportError:  # mcp<2, ruta original
+    from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp.server import Context
 
 from flow_mcp import __version__
 from flow_mcp.constants import (
@@ -52,10 +55,9 @@ server = FastMCP(
     name=SERVER_NAME,
     lifespan=server_lifespan,
     instructions=(
-        "Generate images via Google Flow's batchGenerateImages API. "
-        "Uses a persistent Playwright browser session with your saved "
-        "Flow authentication to call the API directly — no CLI "
-        "quota consumption. "
+        "Generate images with Google Flow (flow.google.com) through its "
+        "batchexecute transport, driven from a persistent Playwright browser "
+        "session with your saved authentication — no Flow Agent chat quota. "
         "Use `flow-mcp auth login` to authenticate."
     ),
 )
@@ -68,9 +70,9 @@ server._mcp_server.version = __version__  # type: ignore[reportPrivateUsage]
 @server.tool(
     name="generate_image",
     description=(
-        "Generate images via Google Flow's batchGenerateImages API. "
-        "Bypasses the Flow Agent chat quota (~10/day) by calling the "
-        "API directly from a browser context with your saved authentication. "
+        "Generate images with Google Flow (batchexecute transport). "
+        "Bypasses the Flow Agent chat quota (~10/day) by driving the real "
+        "Flow page from a browser context with your saved authentication. "
         "Supports text-to-image and image-to-image (pass a reference_image path). "
         "Supports upscale to 2K/4K (pass resolution parameter). "
         "Models: nano-pro (default), nano2 (fast), narwhal, gem_pix_2. "

@@ -62,7 +62,7 @@ class TestConstants:
     def test_version_consistency(self) -> None:
         from flow_mcp import __version__
 
-        assert __version__ == "0.2.0"
+        assert __version__ == "0.3.0"
 
 
 # ── Generator (stateless helpers) ─────────────────────────────────────────
@@ -295,7 +295,7 @@ class TestRecaptcha:
         mock_page.evaluate = AsyncMock()
         mock_page.evaluate.side_effect = [
             "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI",  # discover site key
-            "mocked_token",  # mint token
+            {"token": "mocked_token"},  # mint token (bypass devuelve dict)
         ]
 
         minter = TokenMinter(mock_page)
@@ -314,7 +314,7 @@ class TestRecaptcha:
         mock_page.evaluate = AsyncMock()
         mock_page.evaluate.side_effect = [
             "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI",  # discover site key
-            "",  # empty token
+            {"token": ""},  # empty token
         ]
 
         minter = TokenMinter(mock_page)
@@ -433,7 +433,7 @@ class TestMainCLI:
 
         _print_help()
         captured = capsys.readouterr()
-        assert "v0.2.0" in captured.out
+        assert "v0.3.0" in captured.out
         assert "auth login" in captured.out
         assert "--browser internal" in captured.out
 
@@ -561,9 +561,11 @@ def test_structlog_stderr():
 
 
 def test_server_instance():
+    import asyncio
+
     from flow_mcp.server import server
 
     assert server.name == "flow-image-server"
-    # Check tool registration
-    tool_names = [t.name for t in server._tool_manager.list_tools()]
+    # El API interno de FastMCP cambió entre versiones: usar la vía pública.
+    tool_names = [t.name for t in asyncio.run(server.list_tools())]
     assert "generate_image" in tool_names

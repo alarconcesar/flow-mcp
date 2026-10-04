@@ -15,6 +15,7 @@ from typing import Any, Callable
 import structlog
 from playwright.async_api import Page
 
+from flow_mcp import flow_batch as fb
 from flow_mcp.browser import capture_bearer_token
 from flow_mcp.browser_pool import acquire_page, release_context
 from flow_mcp.constants import (
@@ -43,6 +44,10 @@ _GEN_TIMEOUT = int(os.environ.get("FLOW_GEN_TIMEOUT_MS", str(GEN_TIMEOUT_MS)))
 _GEN_POLL = int(os.environ.get("FLOW_GEN_POLL_MS", str(GEN_POLL_INTERVAL_MS)))
 _NAV_TIMEOUT = int(os.environ.get("FLOW_NAV_TIMEOUT_MS", "60000"))
 _REUSE_PROJECTS = os.environ.get("FLOW_REUSE_PROJECTS", "1") == "1"
+#: Intentos por generación: cada uno mintea un captcha nuevo (son de un solo uso).
+_GEN_ATTEMPTS = int(os.environ.get("FLOW_GEN_ATTEMPTS", "2"))
+#: Tope de la respuesta de generación (las URLs firmadas del CDN van inline).
+_MAX_GEN_CHARS = int(os.environ.get("FLOW_GEN_MAX_CHARS", "2000000"))
 
 # ── Errors ────────────────────────────────────────────────────────────────
 
@@ -124,103 +129,45 @@ def _sleep_with_backoff(attempt: int, base: float = 2.0, max_sleep: float = 30.0
 # ── Project management ────────────────────────────────────────────────────
 
 
-async def _find_existing_project(page: Page) -> str | None:
-    """Try to find a reusable Flow project ID from ``project.listProjects``.
-
-    Returns the first project ID found, or ``None``.
-    """
-    try:
-        projects = await page.evaluate(LIST_PROJECTS_JS)
-        if isinstance(projects, list) and len(projects) > 0:
-            pid = projects[0].get("projectId")
-            if pid:
-                log.info("project.reused", pid=pid)
-                return pid
-    except Exception:
-        pass
-    return None
+# ── Reference image upload ────────────────────────────────────────────────
 
 
-async def _create_project(page: Page, timestamp: str) -> str:
-    """Create a new Flow project via tRPC.
-
-    Returns the project ID.
-    """
-    js = create_project_js(timestamp)
-    await page.add_script_tag(content=js)
-    # Use polling for project creation too
-    st = await _await_window_var(page, "__st", poll_ms=1000, timeout_ms=10_000)
-    if not st or not st.get("pid"):
-        raise GenerationError(f"Project creation failed: {st}")
-    pid = st["pid"]
-    log.info("project.created", pid=pid)
-    return pid
-
-
-async def _ensure_project(page: Page, timestamp: str) -> str:
-    """Get or create a Flow project for generation.
-
-    If ``FLOW_REUSE_PROJECTS=1`` (default), tries to reuse an existing
-    project to avoid accumulating garbage projects in the Flow UI.
-    """
-    if _REUSE_PROJECTS:
-        pid = await _find_existing_project(page)
-        if pid:
-            return pid
-    return await _create_project(page, timestamp)
-
-
-# ── Reference image upload (with polling) ─────────────────────────────────
+_MIME_EXT_BY_SUFFIX: dict[str, str] = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 
 
 async def _upload_reference_image(
     page: Page,
-    bearer: str,
     pid: str,
     ref_path: Path,
-) -> list[dict[str, Any]]:
-    """Upload a reference image via ``POST /v1/flow/uploadImage``.
+    minter: TokenMinter,
+) -> str:
+    """Sube una imagen local al proyecto y devuelve su media id.
 
-    Returns the ``imageInputs`` list to include in the generation request.
+    Los bytes viajan dentro del RPC ``maseQ`` como base64 plano (sin endpoint
+    aparte) y la llamada lleva captcha, igual que una generación. El media id
+    resultante se pasa como imagen base de la generación (I2I).
     """
-    _prog_local(4, 8, f"Uploading reference image ({ref_path.name})...")
+    _prog_local(3, 8, f"Uploading reference image ({ref_path.name})...")
+    mime = _MIME_EXT_BY_SUFFIX.get(ref_path.suffix.lower(), "image/jpeg")
     try:
-        img_bytes = ref_path.read_bytes()
-        img_b64 = base64.b64encode(img_bytes).decode("ascii")
-        upload_body = json.dumps({
-            "clientContext": {"projectId": pid, "tool": "PINHOLE"},
-            "imageBytes": img_b64,
-        })
-
-        js = upload_image_js(bearer, json.dumps(upload_body))
-        await page.add_script_tag(content=js)
-
-        # Poll for upload result instead of fixed sleep
-        up = await _await_window_var(
-            page, "__up",
-            poll_ms=UPLOAD_POLL_INTERVAL_MS,
-            timeout_ms=UPLOAD_TIMEOUT_MS,
+        img_b64 = base64.b64encode(ref_path.read_bytes()).decode("ascii")
+        captcha = await minter.mint(fb.CAPTCHA_IMAGE)
+        envelope = fb.apply_captcha(
+            fb.upload_request(img_b64, pid, mime, ref_path.name), captcha
         )
-        if not up or up.get("error"):
-            raise GenerationError(
-                f"Failed to upload reference image: {up}"
-            )
-        asset_name = (up.get("media") or up).get("name")
-        if not asset_name:
-            raise GenerationError(
-                f"Upload response missing 'name': {json.dumps(up)[:300]}"
-            )
-        log.info("i2i.reference_uploaded", name=asset_name, path=str(ref_path))
-        return [
-            {
-                "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE",
-                "name": asset_name,
-            }
-        ]
-    except GenerationError:
-        raise
+        payload = await fb.rpc_payload(
+            page, fb.RPC_UPLOAD_IMAGE, envelope, max_chars=1_000_000
+        )
+        media_id = fb.read_uploaded_media_id(payload)
     except Exception as exc:
-        raise GenerationError(f"Failed to process reference image: {exc}") from exc
+        raise GenerationError(f"Failed to upload reference image: {exc}") from exc
+    log.info("i2i.reference_uploaded", media_id=media_id, path=str(ref_path))
+    return media_id
 
 
 _MIME_EXT: dict[str, str] = {
@@ -242,6 +189,25 @@ def tempfile_dir() -> str:
     """Cross-platform temp directory path."""
     import tempfile as _tf
     return _tf.gettempdir()
+
+
+async def _upscale_image_batch(
+    page: Page,
+    media_id: str,
+    resolution: str,
+    minter: TokenMinter,
+) -> str:
+    """Escala una imagen ya generada (RPC ``SPrCad``) y devuelve su base64.
+
+    Flow devuelve el bitmap escalado dentro del propio envelope; no hay
+    endpoint de descarga que consultar.
+    """
+    captcha = await minter.mint(fb.CAPTCHA_IMAGE)
+    envelope = fb.apply_captcha(fb.image_upscale_request(media_id, resolution), captcha)
+    payload = await fb.rpc_payload(
+        page, fb.RPC_UPSCALE_IMAGE, envelope, max_chars=32_000_000
+    )
+    return fb.read_upscaled_image(payload)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -429,7 +395,7 @@ async def generate_images(
     reference_image: str | None = None,
     resolution: str = "1k",
 ) -> GenerationResult:
-    """Generate images via Google Flow's ``batchGenerateImages`` API.
+    """Generate images through Google Flow's batchexecute transport.
 
     Uses the pooled browser context — first call opens the browser,
     subsequent calls reuse it.
@@ -459,14 +425,9 @@ async def generate_images(
     Raises
         AuthError, ContentFilteredError, GenerationError
     """
-    wire_model = MODELS.get(model.lower(), "NARWHAL")
-    wire_aspect = ASPECT_RATIOS.get(aspect, "IMAGE_ASPECT_RATIO_PORTRAIT")
     timestamp = str(int(time.time() * 1000))
     do_upscale = resolution.lower() in ("2k", "4k")
-    wire_resolution = {
-        "2k": "UPSAMPLE_IMAGE_RESOLUTION_2K",
-        "4k": "UPSAMPLE_IMAGE_RESOLUTION_4K",
-    }[resolution.lower()]
+    wire_resolution = {"2k": "2K", "4k": "4K", "1k": ""}[resolution.lower()]
 
     (page, ctx) = await acquire_page()
 
@@ -475,90 +436,64 @@ async def generate_images(
             _progress_cb(n, t, msg)
 
     try:
-        _prog(1, 7, "Authenticating with Google Flow...")
-        try:
-            bearer = await capture_bearer_token(page)
-        except RuntimeError:
-            await page.goto(
-                "https://labs.google/fx/tools/flow",
-                wait_until="networkidle",
-                timeout=_NAV_TIMEOUT,
-            )
-            bearer = await capture_bearer_token(page)
+        # 1. Pestaña de Flow lista: tokens `at` + grecaptcha (migración sep-2026).
+        _prog(1, 7, "Opening Google Flow project...")
+        await fb.wait_for_flow_ready(page)
+        pid = await fb.ensure_project(page, "flow-mcp")
+        await fb.open_project(page, pid)
+        minter = TokenMinter(page)
 
-        # Mint reCAPTCHA token
-        _prog(2, 7, "Minting reCAPTCHA token...")
-        try:
-            recaptcha_token = await TokenMinter(page).mint("IMAGE_GENERATION")
-            log.info("recaptcha.minted")
-        except Exception as exc:
-            raise GenerationError(f"reCAPTCHA minting failed: {exc}") from exc
-
-        # Create or reuse project
-        _prog(3, 7, "Setting up Flow project...")
-        pid = await _ensure_project(page, timestamp)
-
-        # Upload reference image (I2I) if provided
-        image_inputs: list[dict[str, Any]] = []
+        # 2. Imagen de referencia (I2I) opcional: se sube al proyecto y viaja
+        #    como media id dentro del request de generación.
+        base_media_id: str | None = None
         if reference_image:
             ref_path = Path(reference_image)
             if not ref_path.exists():
                 raise GenerationError(f"Reference image not found: {reference_image}")
 
-            _prog(4, 7, f"Uploading reference image ({ref_path.name})...")
-            image_inputs = await _upload_reference_image(page, bearer, pid, ref_path)
+            _prog(3, 7, f"Uploading reference image ({ref_path.name})...")
+            base_media_id = await _upload_reference_image(page, pid, ref_path, minter)
 
-        # Call batchGenerateImages (with retry on 401/429/5xx)
-        _prog(5, 7, "Requesting image generation...")
-        session_id = ";" + timestamp
-        client_context: dict[str, Any] = {
-            "tool": "PINHOLE",
-            "projectId": pid,
-            "sessionId": session_id,
-            "recaptchaContext": {
-                "token": recaptcha_token,
-                "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
-            },
-        }
-        request_body = {
-            "clientContext": client_context,
-            "mediaGenerationContext": {"batchId": f"g_{timestamp}"},
-            "useNewMedia": True,
-            "requests": [
-                {
-                    "clientContext": client_context,
-                    "imageModelName": wire_model,
-                    "imageAspectRatio": wire_aspect,
-                    "structuredPrompt": {"parts": [{"text": prompt}]},
-                    "seed": random.randint(1, 2_147_483_647),
-                    "imageInputs": image_inputs,
-                }
-            ],
-        }
-        api_url = (
-            "https://aisandbox-pa.googleapis.com/v1/projects"
-            f"/{pid}/flowMedia:batchGenerateImages"
-        )
-        body_json = json.dumps(json.dumps(request_body))
+        # 4. Generación por batchexecute (ogiZ0b): un captcha nuevo por intento,
+        #    porque los tokens de reCAPTCHA son de un solo uso.
+        _prog(4, 7, "Requesting image generation...")
+        images: list[fb.GeneratedImage] = []
+        last_error = "sin intentos"
+        for attempt in range(1, _GEN_ATTEMPTS + 1):
+            if attempt > 1:
+                await asyncio.sleep(_sleep_with_backoff(attempt))
+                _prog(4, 7, f"Retrying generation ({attempt}/{_GEN_ATTEMPTS})...")
+            try:
+                captcha = await minter.mint(fb.CAPTCHA_IMAGE)
+                envelope = fb.apply_captcha(
+                    fb.image_request(
+                        prompt, pid, count=count, aspect=aspect, model=model,
+                        base_media_id=base_media_id,
+                    ),
+                    captcha,
+                )
+                _, raw = await fb.run_rpc(
+                    page, fb.RPC_GEN_IMAGE, envelope, max_chars=_MAX_GEN_CHARS
+                )
+                images = fb.read_images(fb.first_payload(raw, fb.RPC_GEN_IMAGE))
+                if images:
+                    break
+                last_error = f"respuesta sin imágenes ({len(raw)} chars)"
+            except fb.RpcError as exc:
+                detail = str(exc)
+                if any(k in detail.upper() for k in ("SAFETY", "FILTER", "PUBLIC_ERROR")):
+                    raise ContentFilteredError(f"Flow rechazó el prompt: {detail}") from exc
+                last_error = detail
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+            log.warning("gen.attempt_failed", attempt=attempt, error=last_error[:300])
 
-        raw, bearer = await _call_api_with_retry(page, api_url, bearer, body_json)
-        if raw is None:
-            raise ContentFilteredError(
-                "API returned None — prompt may have been blocked by "
-                "content filter, or bearer token expired."
-            )
+        if not images:
+            raise GenerationError(f"Flow no devolvió imágenes — {last_error}")
+        urls = [img.url for img in images]
+        media_ids = [img.media_id for img in images]
 
-        # Parse fifeUrls and media UUIDs
-        _prog(6, 7, "Processing API response...")
-        urls = re.findall(r'"fifeUrl"\s*:\s*"([^"]+)"', raw)
-        if not urls:
-            raise GenerationError(
-                f"No fifeUrl in API response. Raw: {raw[:500]}"
-            )
-
-        media_ids: list[str] = re.findall(
-            r'"mediaId"\s*:\s*"([0-9a-fA-F-]{36})"', raw
-        )
+        _prog(5, 7, "Processing API response...")
         log.info("images.found", count=len(urls), media_ids=len(media_ids))
 
         # Download (and optionally upscale) each image
@@ -573,9 +508,8 @@ async def generate_images(
 
             if do_upscale and idx < len(media_ids):
                 try:
-                    up_b64 = await _upscale_image_with_retry(
-                        page, bearer, pid, media_ids[idx],
-                        wire_resolution, recaptcha_token,
+                    up_b64 = await _upscale_image_batch(
+                        page, media_ids[idx], wire_resolution, minter,
                     )
                 except Exception as exc:
                     log.warning("upscale.failed", idx=idx, error=str(exc))
@@ -611,9 +545,7 @@ async def generate_images(
                     break
 
         if not saved:
-            raise GenerationError(
-                f"Downloaded 0 images. Raw: {raw[:500]}"
-            )
+            raise GenerationError(f"Downloaded 0 images — {last_error}")
 
         return GenerationResult(files=saved)
 
