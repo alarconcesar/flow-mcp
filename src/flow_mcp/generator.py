@@ -191,6 +191,20 @@ def tempfile_dir() -> str:
     return _tf.gettempdir()
 
 
+def _pinned_seed() -> int | None:
+    """Semilla fija opcional para reproducir la misma cara entre generaciones.
+
+    Se lee de ``~/.flow-mcp/seed`` (un entero). Sin archivo → semilla aleatoria
+    (cada tanda sale distinta). Con archivo → reproducible: mismo prompt y misma
+    semilla dan la misma imagen, que es lo que mantiene consistente un set.
+    """
+    try:
+        raw = (Path.home() / ".flow-mcp" / "seed").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return int(raw) if raw.isdigit() else None
+
+
 async def _upscale_image_batch(
     page: Page,
     media_id: str,
@@ -468,7 +482,7 @@ async def generate_images(
                 envelope = fb.apply_captcha(
                     fb.image_request(
                         prompt, pid, count=count, aspect=aspect, model=model,
-                        base_media_id=base_media_id,
+                        base_media_id=base_media_id, seed=_pinned_seed(),
                     ),
                     captcha,
                 )
@@ -481,7 +495,9 @@ async def generate_images(
                 last_error = f"respuesta sin imágenes ({len(raw)} chars)"
             except fb.RpcError as exc:
                 detail = str(exc)
-                if any(k in detail.upper() for k in ("SAFETY", "FILTER", "PUBLIC_ERROR")):
+                # Solo SAFETY/FILTER son de contenido (no insistir). PUBLIC_ERROR_* es
+                # transitorio (captcha/actividad): va al retry con captcha nuevo.
+                if any(k in detail.upper() for k in ("SAFETY", "FILTER", "PROHIBITED")):
                     raise ContentFilteredError(f"Flow rechazó el prompt: {detail}") from exc
                 last_error = detail
             except Exception as exc:
