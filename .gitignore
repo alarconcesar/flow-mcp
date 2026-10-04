@@ -18,6 +18,11 @@ venv/
 .env
 .env.local
 
+
+# ── Salidas de las sondas de diagnóstico (imágenes generadas) ───────────
+debug-*/flow-gen-*.jpeg
+debug-*/test-gen-*.jpeg
+
 # ── OS ──────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
