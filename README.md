@@ -6,18 +6,18 @@
 
 **MCP server for generating images via Google Flow — no daily quota limits.**
 
-Claude Code (or any MCP client) can generate images using Google Flow's
-`batchGenerateImages` API *directly* through a Playwright browser context
-with your saved authentication, bypassing the Flow Agent chat quota (~10
+Claude Code (or any MCP client) can generate images with Google Flow through
+its `batchexecute` transport, driven from a Playwright browser context with
+your saved authentication, bypassing the Flow Agent chat quota (~10
 images/day).
 
 ## Features
 
 - **Text-to-Image** — generate images from text prompts
 - **Image-to-Image** — use a reference image (pass `reference_image`)
-- **No quota limits** — calls the API directly, not through the chat
+- **No quota limits** — drives Flow's `batchexecute` transport, not the chat
 - **Persistent browser pool** — reuses Chrome across generations (faster)
-- **Auto-retry** — refreshes auth token if it expires
+- **Auto-retry** — re-mints a single-use reCAPTCHA per attempt
 - **Progress reporting** — shows generation progress in Claude Code
 - **No external CLI dependencies** — includes its own auth/login
 - **Cross-platform** — Windows, macOS, Linux (incl. headless)
