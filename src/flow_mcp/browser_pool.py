@@ -7,7 +7,11 @@ loading the profile, and navigating to Flow on every generation.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
+import subprocess
+import time
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -19,6 +23,105 @@ from flow_mcp.constants import BROWSER_ARGS, BROWSER_IDLE_TIMEOUT_S, VIEWPORT
 from flow_mcp.profile import resolve_profile
 
 log = structlog.get_logger("flow-mcp")
+
+
+def _headless_mode() -> bool:
+    """Resolve headless mode from FLOW_HEADLESS (default: real window).
+
+    Google Flow's reCAPTCHA scores pure-headless Chromium as
+    ``PUBLIC_ERROR_UNUSUAL_ACTIVITY`` and refuses to generate, so the default
+    is a real window on a virtual display (Xvfb). Set ``FLOW_HEADLESS=1`` only
+    for diagnostics where generation is not needed.
+    """
+    raw = os.getenv("FLOW_HEADLESS", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return False
+
+
+def _display_alive() -> bool:
+    """True when the DISPLAY from the environment points to a live X server."""
+    disp = os.getenv("DISPLAY", "")
+    m = re.match(r"^:(\d+)", disp)
+    if not m:
+        return False
+    return Path(f"/tmp/.X11-unix/X{m.group(1)}").exists()
+
+
+_STATE_FILE = Path.home() / ".flow-mcp" / "xvfb.json"
+
+
+def _own_display() -> str | None:
+    """Return our own previously started Xvfb display, if still alive."""
+    try:
+        data = json.loads(_STATE_FILE.read_text())
+        disp = str(data["display"])
+        num = disp.lstrip(":")
+        if Path(f"/tmp/.X11-unix/X{num}").exists() and Path(f"/proc/{int(data['pid'])}").exists():
+            return disp
+    except Exception:
+        pass
+    return None
+
+
+def _ensure_display() -> None:
+    """Point DISPLAY at a private Xvfb we control (never a foreign server).
+
+    A stale/foreign X socket in the environment makes Chromium die with
+    ``No protocol specified`` / ``Missing X server``, so we only inherit it when
+    FLOW_USE_EXISTING_DISPLAY=1 and the socket is actually there. Otherwise we
+    reuse our own Xvfb (tracked in ~/.flow-mcp/xvfb.json) or start a fresh one
+    on the first clean display number.
+    """
+    if os.getenv("FLOW_USE_EXISTING_DISPLAY", "").strip().lower() in ("1", "true", "yes") and _display_alive():
+        return
+
+    own = _own_display()
+    if own:
+        os.environ["DISPLAY"] = own
+        os.environ["XAUTHORITY"] = ""
+        log.info("browser.xvfb_reused", display=own)
+        return
+
+    os.environ.pop("DISPLAY", None)
+    os.environ.pop("XAUTHORITY", None)
+    for num in range(99, 140):
+        sock = Path(f"/tmp/.X11-unix/X{num}")
+        # Skip sockets from servers we do not own: we only take a clean number.
+        if sock.exists() or Path(f"/tmp/.X{num}-lock").exists():
+            continue
+        try:
+            proc = subprocess.Popen(
+                ["Xvfb", f":{num}", "-screen", "0", "1280x800x24",
+                 "-nolisten", "tcp", "-ac"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            log.warning("browser.xvfb_missing")
+            return
+        for _ in range(120):
+            if proc.poll() is not None:
+                break
+            if sock.exists():
+                os.environ["DISPLAY"] = f":{num}"
+                os.environ["XAUTHORITY"] = ""
+                try:
+                    _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    _STATE_FILE.write_text(
+                        json.dumps({"display": f":{num}", "pid": proc.pid}))
+                except Exception:
+                    pass
+                log.info("browser.xvfb_started", display=f":{num}", pid=proc.pid)
+                return
+            time.sleep(0.1)
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    log.warning("browser.xvfb_unavailable")
 
 
 class _BrowserPool:
@@ -60,6 +163,7 @@ class _BrowserPool:
         self._lock = asyncio.Lock()
         self._in_use = False
         self._expiry_task: asyncio.Task[None] | None = None
+        self._pw_headless: bool = True
         self._closed = False
 
     # ── Public API ──────────────────────────────────────────────────────
@@ -135,23 +239,31 @@ class _BrowserPool:
         self._cleanup_profile_locks(self._profile_dir)
         channel = channel_for_profile(self._profile_dir)
 
+        self._pw_headless = _headless_mode()
+        if not self._pw_headless:
+            # Must happen BEFORE async_playwright().start(): the Node driver
+            # snapshots the environment at spawn time.
+            _ensure_display()
+
         self._pw = await async_playwright().start()
+        headless = self._pw_headless
         self._ctx = await self._pw.chromium.launch_persistent_context(
             user_data_dir=str(self._profile_dir),
-            headless=True,
+            headless=headless,
             channel=channel or None,
             args=BROWSER_ARGS,
             viewport=VIEWPORT,
         )
         self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
-        log.info("browser.pool_started", profile=str(self._profile_dir), channel=channel)
+        log.info("browser.pool_started", profile=str(self._profile_dir),
+                 channel=channel, headless=headless)
 
     async def _start_new_context(self) -> BrowserContext:
         """Create a temporary non-persistent context (fallback when pool busy)."""
         if self._pw is None:
             self._pw = await async_playwright().start()
         browser = await self._pw.chromium.launch(
-            headless=True,
+            headless=self._pw_headless,
             args=["--no-sandbox", "--disable-gpu"],
         )
         ctx = await browser.new_context(viewport=VIEWPORT)
