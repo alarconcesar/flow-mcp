@@ -307,6 +307,7 @@ def image_request(
     model: str = IMAGE_MODEL,
     ref_media_ids: Optional[list[str]] = None,
     base_media_id: Optional[str] = None,
+    seeds: Optional[list[int]] = None,
 ) -> str:
     """Un item de request por variante: no hay campo "cuántas", Flow devuelve
     una imagen por item de la lista, así que ``count`` replica el item con
@@ -321,13 +322,18 @@ def image_request(
     items = []
     for index in range(count):
         text = prompts[index] if prompts and index < len(prompts) else prompt
+        item_seed = (
+            seeds[index]
+            if seeds and index < len(seeds) and isinstance(seeds[index], int)
+            else base + index * 9973
+        )
         image_inputs: list = []
         if base_media_id:
             image_inputs.append(_base_image(base_media_id))
         image_inputs.extend(
             _reference(mid) for mid in (ref_media_ids or []) if mid != base_media_id
         )
-        items.append([None, None, image_inputs or None, base + index * 9973, ratio,
+        items.append([None, None, image_inputs or None, item_seed, ratio,
                       resolved_model, None, _context(project_id), [[[text]]],
                       None, None, None, _client_uuid(), _client_uuid()])
     return build_envelope(RPC_GEN_IMAGE, [None, items, 1, _context(project_id),

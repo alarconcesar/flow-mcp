@@ -60,9 +60,13 @@ class TestConstants:
         assert GEN_TIMEOUT_MS == 90_000
 
     def test_version_consistency(self) -> None:
+        import tomllib
+
         from flow_mcp import __version__
 
-        assert __version__ == "0.3.0"
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+        assert __version__ == declared
 
 
 # ── Generator (stateless helpers) ─────────────────────────────────────────
@@ -614,3 +618,83 @@ async def test_generate_images_requires_prompt() -> None:
 
     with pytest.raises(GenerationError):
         await generate_images()
+
+
+# ── Lotes (>4 imágenes) y semillas explícitas ────────────────────────────
+
+
+class TestChunks:
+    def test_chunk_prompts_splits_in_fours(self) -> None:
+        from flow_mcp.generator import chunk_prompts
+
+        chunks = chunk_prompts(["a", "b", "c", "d", "e", "f"])
+        assert [len(c) for c in chunks] == [4, 2]
+        assert chunks[0] == ["a", "b", "c", "d"]
+        assert chunks[1] == ["e", "f"]
+
+    def test_chunk_prompts_exact_and_empty(self) -> None:
+        from flow_mcp.generator import chunk_prompts
+
+        assert len(chunk_prompts(["a", "b", "c", "d"])) == 1
+        assert chunk_prompts([]) == []
+
+    def test_chunk_prompts_bad_size(self) -> None:
+        from flow_mcp.generator import chunk_prompts
+
+        with pytest.raises(ValueError):
+            chunk_prompts(["a"], size=0)
+
+
+class TestSeeds:
+    @staticmethod
+    def _items(envelope: str) -> list:
+        inner = json.loads(json.loads(envelope)[0][0][1])
+        return inner[1]
+
+    def test_seeds_override_per_item(self) -> None:
+        from flow_mcp import flow_batch as fb
+
+        items = self._items(
+            fb.image_request("p", "proj", count=2, prompts=["x", "y"], seeds=[111, 222])
+        )
+        assert [item[3] for item in items] == [111, 222]
+
+    def test_missing_seeds_fall_back_to_sequence(self) -> None:
+        from flow_mcp import flow_batch as fb
+
+        items = self._items(
+            fb.image_request("p", "proj", count=2, seed=10, seeds=[111])
+        )
+        assert items[0][3] == 111
+        assert items[1][3] == 10 + 9973
+
+
+@pytest.mark.asyncio
+async def test_generate_batch_rejects_empty_prompts() -> None:
+    from flow_mcp.server import generate_batch
+
+    out = json.loads(await generate_batch(prompts=[]))
+    assert out["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_generate_batch_rejects_huge_batches() -> None:
+    from flow_mcp.server import generate_batch
+
+    out = json.loads(await generate_batch(prompts=[f"p{i}" for i in range(41)]))
+    assert out["success"] is False
+    assert "41" in out["error"]
+
+
+def test_server_exposes_batch_tool() -> None:
+    import asyncio
+
+    from flow_mcp.server import server
+
+    tools = {t.name: t for t in asyncio.run(server.list_tools())}
+    assert "generate_batch" in tools
+    tool = tools["generate_batch"]
+    # fastmcp 4 expone el JSON Schema en `.parameters` (antes inputSchema)
+    schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None)
+    assert "prompts" in schema.get("properties", {})
+    assert "prompts" in (schema.get("required") or [])

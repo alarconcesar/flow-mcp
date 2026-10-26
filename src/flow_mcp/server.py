@@ -28,7 +28,7 @@ from flow_mcp.constants import (
     MODELS,
     SERVER_NAME,
 )
-from flow_mcp.generator import GenerationError, generate_images
+from flow_mcp.generator import GenerationError, chunk_prompts, generate_images
 
 log = structlog.get_logger("flow-mcp")
 
@@ -78,6 +78,8 @@ server._mcp_server.version = __version__  # type: ignore[reportPrivateUsage]
         "BATCH: pass `prompts` (1–4 different prompts) to get several distinct "
         "images from ONE batched call (fastest for variants); or use `count` "
         "(1–4) for N takes of the same prompt. Max 4 images per call. "
+        "For MORE than 4 images use `generate_batch` instead. "
+        "`seeds` pins the RNG (same prompt+model+seed = reproducible image). "
         "Models: nano-pro (default), nano2 (fast), narwhal, gem_pix_2. "
         "Aspects: 9:16 (default portrait), 16:9 (landscape), 1:1 (square), "
         "4:3, 3:4. "
@@ -90,6 +92,7 @@ async def generate_image(
     count: int = 1,
     aspect: ALLOWED_ASPECTS = "9:16",  # type: ignore[assignment]
     prompts: list[str] | None = None,
+    seeds: list[int] | None = None,
     reference_image: str | None = None,
     resolution: str = "1k",
     ctx: Context | None = None,
@@ -103,6 +106,8 @@ async def generate_image(
         aspect: Aspect ratio.
         prompts: List of 1–4 different prompts — each yields its own image in
             one batched call. Overrides ``prompt`` and ``count``.
+        seeds: Optional list of seeds, one per image (per prompt when ``prompts``
+            is given). Same prompt + model + seed reproduces the image.
         reference_image: Optional path to a local image file for I2I.
         resolution: Output resolution. "1k" (default, original), "2k", or "4k".
             4K requires a Flow Ultra subscription.
@@ -189,6 +194,7 @@ async def generate_image(
             aspect=aspect,
             output_dir=output_dir,
             prompts=prompts,
+            seeds=seeds,
             reference_image=reference_image,
             resolution=resolution,
             _progress_cb=_report,
@@ -204,6 +210,200 @@ async def generate_image(
     except Exception as exc:
         log.error("generate_image.unexpected", error=str(exc))
         return f"❌ Unexpected error: {exc}"
+
+
+# ── Batch tool (lotes de más de 4 imágenes) ──────────────────────────────
+
+#: Tope de prompts por lote: protege contra llamadas que durarían horas.
+_MAX_BATCH = int(os.environ.get("FLOW_MAX_BATCH", "40"))
+
+
+@server.tool(
+    name="generate_batch",
+    description=(
+        "Generate MANY images from a list of prompts of ANY length. Splits the "
+        "list into rounds of 4 (Flow's per-request limit) and runs them "
+        "sequentially on the same authenticated browser session. Flow sometimes "
+        "returns fewer images than items in a round, so missing prompts get ONE "
+        "automatic retry. Returns JSON with one entry per prompt (index, prompt, "
+        "path, kb) plus `missing` for anything that still failed; a failed round "
+        "does not abort the rest. ~20-25 s per round of 4. Use `generate_image` "
+        "for 1–4 images (one round, cheaper); use this for big variation sets, "
+        "storyboards or logo sheets. `seeds` pins one RNG seed per prompt."
+    ),
+)
+async def generate_batch(
+    prompts: list[str],
+    model: ALLOWED_MODELS = "nano-pro",  # type: ignore[assignment]
+    aspect: ALLOWED_ASPECTS = "9:16",  # type: ignore[assignment]
+    reference_image: str | None = None,
+    resolution: str = "1k",
+    seeds: list[int] | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Generate any number of images (4 per Flow round, sequential + retry)."""
+    clean = [p.strip() for p in prompts if isinstance(p, str) and p.strip()]
+    if not clean:
+        return json.dumps({"success": False, "error": "`prompts` está vacío."})
+    if len(clean) > _MAX_BATCH:
+        return json.dumps({
+            "success": False,
+            "error": f"Máximo {_MAX_BATCH} prompts por lote (recibí {len(clean)}).",
+        })
+
+    mdl = model.lower()
+    if mdl not in MODELS:
+        return json.dumps({
+            "success": False,
+            "error": f"Invalid model '{mdl}'. Valid: {', '.join(MODELS)}",
+        })
+    asp = aspect.lower()
+    if asp not in ASPECT_RATIOS:
+        return json.dumps({
+            "success": False,
+            "error": f"Invalid aspect '{asp}'. Valid: {', '.join(ASPECT_RATIOS)}",
+        })
+    resn = resolution.lower()
+    if resn not in ("1k", "2k", "4k"):
+        return json.dumps({
+            "success": False,
+            "error": f"Invalid resolution '{resn}'. Valid: 1k, 2k, 4k",
+        })
+    if seeds is not None and len(seeds) < len(clean):
+        return json.dumps({
+            "success": False,
+            "error": f"seeds trae {len(seeds)} valores para {len(clean)} prompts.",
+        })
+
+    output_dir = os.environ.get("GFLOW_OUTPUT_DIR")
+    rounds = chunk_prompts(clean, 4)
+    log.info(
+        "generate_batch.called",
+        prompts=len(clean),
+        rounds=len(rounds),
+        model=mdl,
+        aspect=asp,
+    )
+
+    images: list[dict[str, object]] = []
+    round_errors: list[dict[str, object]] = []
+    done = 0
+
+    def _report(current: int, total: int, msg: str) -> None:
+        if ctx is None:
+            return
+        try:
+            import asyncio
+
+            asyncio.ensure_future(
+                ctx.report_progress(
+                    progress=float(min(done + current, len(clean))),
+                    total=float(len(clean)),
+                    message=msg,
+                )
+            )
+        except Exception:
+            pass
+
+    async def _round(
+        chunk: list[str],
+        chunk_seeds: list[int] | None,
+        label: str,
+    ) -> tuple[list[Path], str | None]:
+        """Una tanda de ≤4 prompts; devuelve (archivos, error)."""
+        try:
+            res = await generate_images(
+                prompts=chunk,
+                seeds=chunk_seeds,
+                model=mdl,
+                aspect=asp,
+                output_dir=output_dir,
+                reference_image=reference_image,
+                resolution=resn,
+                _progress_cb=lambda c, t, m: _report(c, t, f"{label} {m}"),
+            )
+            return list(res.files), None
+        except Exception as exc:
+            log.warning("generate_batch.round_failed", label=label, error=str(exc)[:300])
+            return [], str(exc)
+
+    def _collect(chunk: list[str], files: list[Path], indexes: list[int]) -> None:
+        for offset, path in enumerate(files):
+            if offset >= len(chunk):
+                break
+            images.append({
+                "index": indexes[offset],
+                "prompt": chunk[offset],
+                "path": str(path.resolve()),
+                "kb": round(path.stat().st_size / 1024),
+            })
+
+    # ── Rondas principales ────────────────────────────────────────────
+    for round_no, chunk in enumerate(rounds, start=1):
+        files, err = await _round(
+            chunk,
+            seeds[done:done + len(chunk)] if seeds else None,
+            f"[{round_no}/{len(rounds)}]",
+        )
+        _collect(chunk, files, list(range(done, done + len(chunk))))
+        if err:
+            round_errors.append({"round": round_no, "prompts": chunk, "error": err})
+        elif len(files) < len(chunk):
+            round_errors.append({
+                "round": round_no,
+                "error": f"Flow devolvió {len(files)} de {len(chunk)}",
+                "prompts": chunk[len(files):],
+                "_short": True,
+            })
+        done += len(chunk)
+
+    # ── Un reintento para lo que quedó sin imagen ─────────────────────
+    produced = {img["prompt"] for img in images}
+    missing = [(i, p) for i, p in enumerate(clean) if p not in produced]
+    retried = len(missing)
+    if missing:
+        log.info("generate_batch.retry", missing=len(missing))
+        for start in range(0, len(missing), 4):
+            pair = missing[start:start + 4]
+            chunk = [p for _, p in pair]
+            chunk_seeds = [seeds[i] for i, _ in pair] if seeds else None
+            files, err = await _round(chunk, chunk_seeds, f"[reintento {start // 4 + 1}]")
+            _collect(chunk, files, [i for i, _ in pair])
+            if err:
+                round_errors.append({"round": "retry", "prompts": chunk, "error": err})
+
+    produced = {img["prompt"] for img in images}
+    unresolved = [p for p in clean if p not in produced]
+
+    payload: dict[str, object] = {
+        "success": not unresolved,
+        "requested": len(clean),
+        "generated": len(images),
+        "rounds": len(rounds),
+        "model": mdl,
+        "aspect": asp,
+        "resolution": resn,
+        "images": images,
+    }
+    if retried:
+        payload["retried"] = retried
+    if unresolved:
+        payload["missing"] = unresolved
+        # Solo los fallos que dejaron prompts sin imagen: las rondas cortas que
+        # el reintento resolvió son ruido para quien lee el resultado.
+        real_errors = [e for e in round_errors if not e.get("_short")]
+        if real_errors:
+            payload["errors"] = [
+                {k: v for k, v in e.items() if not k.startswith("_")}
+                for e in real_errors
+            ]
+    log.info(
+        "generate_batch.complete",
+        requested=len(clean),
+        generated=len(images),
+        missing=len(unresolved),
+    )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ── Entry point ─────────────────────────────────────────────────────────

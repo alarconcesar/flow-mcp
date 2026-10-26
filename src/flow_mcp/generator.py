@@ -95,6 +95,17 @@ class GenerationResult:
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 
+def chunk_prompts(prompts: list[str], size: int = 4) -> list[list[str]]:
+    """Parte una lista de prompts en tandas de ``size``.
+
+    Flow devuelve como máximo 4 imágenes por RPC, así que una lista larga se
+    envía en tandas secuenciales sobre la misma sesión de navegador.
+    """
+    if size < 1:
+        raise ValueError("chunk size must be >= 1")
+    return [prompts[i:i + size] for i in range(0, len(prompts), size)]
+
+
 async def _await_window_var(
     page: Page,
     var_name: str,
@@ -406,6 +417,7 @@ async def generate_images(
     output_dir: str | Path | None = None,
     *,
     prompts: list[str] | None = None,
+    seeds: list[int] | None = None,
     _progress_cb: Callable[[int, int, str], None] | None = None,
     reference_image: str | None = None,
     resolution: str = "1k",
@@ -430,6 +442,10 @@ async def generate_images(
         Optional list of 1–4 DIFFERENT prompts. Each one becomes its own item
         in the same batched call, so several distinct images come back from a
         single generation round. Overrides ``prompt``/``count``.
+    seeds:
+        Optional list of seeds, one per result (per prompt when ``prompts`` is
+        given, otherwise per take). Same seed + same prompt + same model =
+        reproducible image.
     aspect:
         Aspect ratio (9:16, 16:9, 1:1, etc).
     output_dir:
@@ -466,6 +482,28 @@ async def generate_images(
         count = len(batch_prompts)
     if not prompt or not str(prompt).strip():
         raise GenerationError("Falta el prompt: pasa `prompt` o `prompts`")
+
+    # Semillas explícitas: permiten reproducir una imagen exacta (mismo prompt +
+    # mismo modelo + misma semilla). Con `prompts`, va una por prompt.
+    batch_seeds: list[int] | None = None
+    if seeds:
+        batch_seeds = [
+            int(s) for s in seeds if isinstance(s, int) and not isinstance(s, bool)
+        ]
+        if not batch_seeds:
+            raise GenerationError("seeds no tiene enteros válidos")
+        if batch_prompts:
+            if len(batch_seeds) < count:
+                raise GenerationError(
+                    f"seeds trae {len(batch_seeds)} valores para {count} prompts"
+                )
+            batch_seeds = batch_seeds[:count]
+        else:
+            if len(batch_seeds) > 4:
+                raise GenerationError(
+                    f"Máximo 4 imágenes por llamada (seeds trae {len(batch_seeds)})"
+                )
+            count = len(batch_seeds)
 
     (page, ctx) = await acquire_page()
 
@@ -507,7 +545,7 @@ async def generate_images(
                     fb.image_request(
                         prompt, pid, count=count, aspect=aspect, model=model,
                         base_media_id=base_media_id, seed=_pinned_seed(),
-                        prompts=batch_prompts,
+                        prompts=batch_prompts, seeds=batch_seeds,
                     ),
                     captcha,
                 )

@@ -89,6 +89,7 @@ Restart Claude Code. The `generate_image` tool will be available.
 | `model` | enum | `nano-pro` | `nano2`, `nano-pro`, `narwhal`, `gem_pix_2` |
 | `count` | integer | `1` | Number of images (1–4) for the same prompt |
 | `aspect` | enum | `9:16` | `9:16`, `16:9`, `1:1`, `4:3`, `3:4` |
+| `seeds` | integer[] | optional | One RNG seed per image (per prompt). Same prompt + model + seed → reproducible |
 | `reference_image` | string | optional | Path to a local image for I2I |
 
 \* One of `prompt` or `prompts` is required. Max 4 images per call either way.
@@ -111,7 +112,15 @@ prompts: [
 ```
 One `batchexecute` call → ~20 s for all four, instead of ~25 s each.
 
-**Image-to-Image:**
+**Batch of more than 4 (`generate_batch`):**
+```
+generate_batch(prompts: [12 icon ideas], aspect: "1:1", resolution: "2k")
+```
+Splits the list into rounds of 4 (Flow's per-request limit), runs them
+sequentially on the same browser session and retries once whatever Flow skipped.
+Returns JSON: `requested`, `generated`, `rounds`, `images[]` (`index`, `prompt`,
+`path`, `kb`), plus `missing[]`/`errors[]` only when something did not come out.
+\n**Image-to-Image:**
 ```
 Take this photo and make it cyberpunk style,
 reference_image: /Users/me/photo.jpg
