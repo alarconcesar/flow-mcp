@@ -10,7 +10,7 @@ import sys
 
 import structlog
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # ── Global structlog config: always write to stderr ─────────────────────
 # The MCP transport uses stdout for JSON-RPC — any stray log line there

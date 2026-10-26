@@ -399,12 +399,13 @@ def _prog_local(n: int, t: int, msg: str) -> None:
 
 
 async def generate_images(
-    prompt: str,
+    prompt: str | None = None,
     model: str = "nano-pro",
     count: int = 1,
     aspect: str = "9:16",
     output_dir: str | Path | None = None,
     *,
+    prompts: list[str] | None = None,
     _progress_cb: Callable[[int, int, str], None] | None = None,
     reference_image: str | None = None,
     resolution: str = "1k",
@@ -417,13 +418,18 @@ async def generate_images(
     Parameters
     ----------
     prompt:
-        Text description of the image to generate.
+        Text description of the image to generate (ignored when ``prompts``
+        is given).
     model:
         Model name (nano-pro, nano2, narwhal, gem_pix_2).
     count:
-        Maximum number of images to download (1–4). The API typically
-        returns a single image per call; any excess fifeUrls in the
-        response are used to fulfill the requested count.
+        Maximum number of images to download (1–4) for a single prompt.
+        Flow returns one image per request item, so ``count`` replicates the
+        item with new seeds inside ONE batched call.
+    prompts:
+        Optional list of 1–4 DIFFERENT prompts. Each one becomes its own item
+        in the same batched call, so several distinct images come back from a
+        single generation round. Overrides ``prompt``/``count``.
     aspect:
         Aspect ratio (9:16, 16:9, 1:1, etc).
     output_dir:
@@ -442,6 +448,24 @@ async def generate_images(
     timestamp = str(int(time.time() * 1000))
     do_upscale = resolution.lower() in ("2k", "4k")
     wire_resolution = {"2k": "2K", "4k": "4K", "1k": ""}[resolution.lower()]
+
+    # Lista de prompts distintos: un item del batch por prompt. Flow devuelve
+    # una imagen por item, así que 4 prompts = 4 imágenes en la MISMA llamada.
+    batch_prompts: list[str] | None = None
+    if prompts:
+        batch_prompts = [
+            p.strip() for p in prompts if isinstance(p, str) and p.strip()
+        ]
+        if not batch_prompts:
+            raise GenerationError("prompts está vacío: pasa al menos un prompt")
+        if len(batch_prompts) > 4:
+            raise GenerationError(
+                f"Máximo 4 prompts por llamada (recibí {len(batch_prompts)})"
+            )
+        prompt = batch_prompts[0]
+        count = len(batch_prompts)
+    if not prompt or not str(prompt).strip():
+        raise GenerationError("Falta el prompt: pasa `prompt` o `prompts`")
 
     (page, ctx) = await acquire_page()
 
@@ -483,6 +507,7 @@ async def generate_images(
                     fb.image_request(
                         prompt, pid, count=count, aspect=aspect, model=model,
                         base_media_id=base_media_id, seed=_pinned_seed(),
+                        prompts=batch_prompts,
                     ),
                     captcha,
                 )

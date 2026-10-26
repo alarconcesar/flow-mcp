@@ -84,11 +84,14 @@ Restart Claude Code. The `generate_image` tool will be available.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `prompt` | string | **required** | Text description of the image |
+| `prompt` | string | optional* | Text description of the image |
+| `prompts` | string[] | optional* | 1–4 **different** prompts → one image each, in a single batched call. Overrides `prompt`/`count` |
 | `model` | enum | `nano-pro` | `nano2`, `nano-pro`, `narwhal`, `gem_pix_2` |
-| `count` | integer | `1` | Number of images (1–4) |
+| `count` | integer | `1` | Number of images (1–4) for the same prompt |
 | `aspect` | enum | `9:16` | `9:16`, `16:9`, `1:1`, `4:3`, `3:4` |
 | `reference_image` | string | optional | Path to a local image for I2I |
+
+\* One of `prompt` or `prompts` is required. Max 4 images per call either way.
 
 ### Examples
 
@@ -96,6 +99,17 @@ Restart Claude Code. The `generate_image` tool will be available.
 ```
 Generate an image of a cyberpunk city at night, neon lights, 16:9
 ```
+
+**Batch (4 different images, one round):**
+```
+prompts: [
+  "logo mark, orange cat head, flat vector",
+  "logo mark, robot head, flat vector",
+  "logo mark, leaf, flat vector",
+  "logo mark, lightning bolt, flat vector"
+]
+```
+One `batchexecute` call → ~20 s for all four, instead of ~25 s each.
 
 **Image-to-Image:**
 ```

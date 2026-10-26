@@ -75,6 +75,9 @@ server._mcp_server.version = __version__  # type: ignore[reportPrivateUsage]
         "Flow page from a browser context with your saved authentication. "
         "Supports text-to-image and image-to-image (pass a reference_image path). "
         "Supports upscale to 2K/4K (pass resolution parameter). "
+        "BATCH: pass `prompts` (1–4 different prompts) to get several distinct "
+        "images from ONE batched call (fastest for variants); or use `count` "
+        "(1–4) for N takes of the same prompt. Max 4 images per call. "
         "Models: nano-pro (default), nano2 (fast), narwhal, gem_pix_2. "
         "Aspects: 9:16 (default portrait), 16:9 (landscape), 1:1 (square), "
         "4:3, 3:4. "
@@ -82,10 +85,11 @@ server._mcp_server.version = __version__  # type: ignore[reportPrivateUsage]
     ),
 )
 async def generate_image(
-    prompt: str,
+    prompt: str | None = None,
     model: ALLOWED_MODELS = "nano-pro",  # type: ignore[assignment]
     count: int = 1,
     aspect: ALLOWED_ASPECTS = "9:16",  # type: ignore[assignment]
+    prompts: list[str] | None = None,
     reference_image: str | None = None,
     resolution: str = "1k",
     ctx: Context | None = None,
@@ -95,8 +99,10 @@ async def generate_image(
     Args:
         prompt: Text description of the image to generate.
         model: Model to use.
-        count: Number of images (1–4, default 1).
+        count: Number of images (1–4, default 1) for the same prompt.
         aspect: Aspect ratio.
+        prompts: List of 1–4 different prompts — each yields its own image in
+            one batched call. Overrides ``prompt`` and ``count``.
         reference_image: Optional path to a local image file for I2I.
         resolution: Output resolution. "1k" (default, original), "2k", or "4k".
             4K requires a Flow Ultra subscription.
@@ -106,6 +112,26 @@ async def generate_image(
         Human-readable result with paths to the generated files.
     """
     # ── Validate ──────────────────────────────────────────────────────
+    if prompts:
+        prompts = [p.strip() for p in prompts if isinstance(p, str) and p.strip()]
+        if not prompts:
+            return json.dumps({
+                "success": False,
+                "error": "`prompts` está vacío: pasa al menos un prompt.",
+            })
+        if len(prompts) > 4:
+            return json.dumps({
+                "success": False,
+                "error": f"Máximo 4 prompts por llamada (recibí {len(prompts)}).",
+            })
+        prompt = prompts[0]
+        count = len(prompts)
+    elif not prompt or not prompt.strip():
+        return json.dumps({
+            "success": False,
+            "error": "Falta `prompt` (o pasa `prompts` para varias imágenes).",
+        })
+
     model = model.lower()
     if model not in MODELS:
         return json.dumps({
@@ -131,10 +157,11 @@ async def generate_image(
 
     log.info(
         "generate_image.called",
-        prompt=prompt[:80],
+        prompt=(prompt or "")[:80],
         model=model,
         count=count,
         aspect=aspect,
+        batch=len(prompts) if prompts else 1,
     )
 
     # ── Progress callback ─────────────────────────────────────────────
@@ -161,6 +188,7 @@ async def generate_image(
             count=count,
             aspect=aspect,
             output_dir=output_dir,
+            prompts=prompts,
             reference_image=reference_image,
             resolution=resolution,
             _progress_cb=_report,

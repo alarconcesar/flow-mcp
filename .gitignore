@@ -40,3 +40,8 @@ Thumbs.db
 # flow-gen-*.png
 # flow-gen-*.webp
 # flow-gen-*.jpg
+# Sondas de debug: nunca versionar las imágenes generadas
+debug-*/**/*.jpeg
+debug-*/**/*.jpg
+debug-*/**/*.png
+debug-*/**/*.webp

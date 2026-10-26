@@ -569,3 +569,48 @@ def test_server_instance():
     # El API interno de FastMCP cambió entre versiones: usar la vía pública.
     tool_names = [t.name for t in asyncio.run(server.list_tools())]
     assert "generate_image" in tool_names
+
+
+# ── Batch de prompts (varias imágenes en una sola llamada) ────────────────
+
+
+class TestBatchPrompts:
+    """``image_request`` arma un item por prompt en el mismo batchexecute."""
+
+    @staticmethod
+    def _items(envelope: str) -> list:
+        inner = json.loads(json.loads(envelope)[0][0][1])
+        return inner[1]
+
+    def test_one_item_per_prompt(self) -> None:
+        from flow_mcp import flow_batch as fb
+
+        env = fb.image_request(
+            "ignorado", "proj-1", count=3, prompts=["uno", "dos", "tres"]
+        )
+        items = self._items(env)
+        assert len(items) == 3
+        assert [item[8][0][0][0] for item in items] == ["uno", "dos", "tres"]
+
+    def test_distinct_seeds(self) -> None:
+        from flow_mcp import flow_batch as fb
+
+        items = self._items(fb.image_request("p", "proj-1", count=4))
+        seeds = [item[3] for item in items]
+        assert len(set(seeds)) == 4
+
+    def test_count_bounds(self) -> None:
+        from flow_mcp import flow_batch as fb
+
+        with pytest.raises(ValueError):
+            fb.image_request("p", "proj-1", count=0)
+        with pytest.raises(ValueError):
+            fb.image_request("p", "proj-1", count=5)
+
+
+@pytest.mark.asyncio
+async def test_generate_images_requires_prompt() -> None:
+    from flow_mcp.generator import GenerationError, generate_images
+
+    with pytest.raises(GenerationError):
+        await generate_images()
